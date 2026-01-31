@@ -82,8 +82,15 @@ jobs:
         run: |
           cd openwrt-sdk
           
-          # 创建配置
-          cat > .config << 'EOF'
+          # 先复制默认配置，避免大量依赖警告
+          if [ -f "Config-${SDK_URL##*/}" ]; then
+            cp "Config-${SDK_URL##*/}" .config
+          elif [ -f "Config-devel" ]; then
+            cp Config-devel .config
+          fi
+          
+          # 添加我们的包配置
+          cat >> .config << 'EOF'
           CONFIG_PACKAGE_pixiv-backup=m
           CONFIG_PACKAGE_luci-app-pixiv-backup=m
           EOF
