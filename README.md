@@ -1,0 +1,270 @@
+# Pixiv备份服务 for OpenWrt/IstoreOS
+
+一个用于OpenWrt/IstoreOS的Pixiv备份服务，支持通过LuCI界面配置，自动备份用户的收藏和关注列表。
+
+## 功能特点
+
+- 📱 **LuCI界面**: 完整的Web配置界面
+- 🔐 **Pixiv API认证**: 支持OAuth 2.0 PKCE流程
+- 📸 **图片下载**: 自动下载高分辨率图片
+- 📋 **元数据保存**: 保存完整的作品信息
+- ⏰ **定时任务**: 支持定时自动备份
+- 🔧 **内容过滤**: 支持R18内容过滤和标签过滤
+- 📊 **统计信息**: 显示下载进度和存储使用情况
+- 🔄 **断点续传**: 支持从上次中断处继续下载
+
+## 安装方法
+
+### 1. 编译安装（从源码）
+
+```bash
+# 克隆代码
+git clone https://github.com/yourusername/pixiv-backup.git
+
+# 进入目录
+cd pixiv-backup
+
+# 编译
+make menuconfig  # 选择 Utilities -> pixiv-backup, LuCI -> Applications -> luci-app-pixiv-backup
+make package/pixiv-backup/compile V=s
+make package/luci-app-pixiv-backup/compile V=s
+
+# 安装
+opkg install bin/packages/*/pixiv-backup*.ipk
+opkg install bin/packages/*/luci-app-pixiv-backup*.ipk
+```
+
+### 2. 直接安装（预编译包）
+
+```bash
+# 下载安装包
+wget https://github.com/yourusername/pixiv-backup/releases/download/v1.0.0/pixiv-backup_1.0.0-1_all.ipk
+wget https://github.com/yourusername/pixiv-backup/releases/download/v1.0.0/luci-app-pixiv-backup_1.0.0-1_all.ipk
+
+# 安装
+opkg install pixiv-backup_1.0.0-1_all.ipk
+opkg install luci-app-pixiv-backup_1.0.0-1_all.ipk
+```
+
+## 配置步骤
+
+### 1. 获取Pixiv Refresh Token
+
+#### 方法一：使用get-pixivpy-token工具（推荐）
+
+```bash
+# 在电脑上安装工具
+pip install get-pixivpy-token
+
+# 运行工具
+gppt
+
+# 按照提示登录，工具会显示refresh_token
+```
+
+#### 方法二：手动获取
+
+1. 在浏览器中登录 https://www.pixiv.net/
+2. 按F12打开开发者工具
+3. 切换到Network（网络）标签
+4. 刷新页面
+5. 查找包含 "access_token" 的请求
+6. 在请求参数或响应中找到refresh_token
+
+### 2. LuCI界面配置
+
+1. 登录LuCI管理界面（通常是 http://192.168.1.1）
+2. 进入"服务" -> "Pixiv备份"
+3. 配置以下信息：
+   - **用户ID**: 你的Pixiv用户ID
+   - **Refresh Token**: 上一步获取的refresh_token
+   - **输出目录**: 保存图片的目录（默认 /mnt/sda1/pixiv-backup）
+   - **下载模式**: 选择要下载的内容（收藏/关注/两者）
+   - **其他过滤设置**: 根据需要进行配置
+
+4. 点击"保存&应用"
+
+### 3. 启动服务
+
+在LuCI界面中：
+1. 确保配置正确
+2. 点击"启用服务"
+3. 点击"开始备份"进行测试
+
+或者使用命令行：
+```bash
+# 测试配置
+/etc/init.d/pixiv-backup test
+
+# 启动服务
+/etc/init.d/pixiv-backup start
+
+# 查看状态
+/etc/init.d/pixiv-backup status
+```
+
+## 目录结构
+
+服务运行后会在输出目录创建以下结构：
+
+```
+/mnt/sda1/pixiv-backup/
+├── img/                    # 图片文件
+│   ├── {user_id}/         # 按用户ID分类
+│   │   ├── {illust_id}.jpg
+│   │   └── ugoira/        # 动图文件
+│   │       └── {illust_id}.zip
+│   └── ...
+├── metadata/              # 元数据文件
+│   ├── {user_id}/
+│   │   └── {illust_id}.json
+│   └── ...
+└── data/                  # 程序数据
+    ├── pixiv.db          # SQLite数据库
+    ├── cache/            # 缓存文件
+    ├── logs/             # 日志文件
+    └── templates/        # 模板文件
+```
+
+## 元数据结构
+
+每个作品的元数据文件包含以下信息：
+
+```json
+{
+  "illust_id": 12345678,
+  "title": "作品标题",
+  "caption": "作品描述",
+  "user": {
+    "user_id": 87654321,
+    "name": "作者名称",
+    "account": "作者账号",
+    "profile_image_url": "头像URL"
+  },
+  "create_date": "2023-01-01T00:00:00+09:00",
+  "page_count": 1,
+  "width": 1200,
+  "height": 800,
+  "bookmark_count": job_id,
+  "view_count": 5000,
+  "sanity_level": 2,
+  "x_restrict": 0,
+  "type": "illust",
+  "tags": ["tag1", "tag2", "tag3"],
+  "image_urls": {
+    "large": "https://i.pximg.net/...",
+    "medium": "https://i.pximg.net/...",
+    "square_medium": "https://i.pximg.net/..."
+  },
+  "tools": ["SAI", "Photoshop"],
+  "download_time": "2023-12-01 14:30:00",
+  "original_url": "https://www.pixiv.net/artworks/12345678"
+}
+```
+
+## 命令行工具
+
+### 手动运行备份
+```bash
+pixiv-backup
+```
+
+### 守护进程模式
+```bash
+pixiv-backup --daemon
+```
+
+### Token获取助手
+```bash
+python3 /usr/share/pixiv-backup/tools/token_helper.py
+```
+
+## 故障排除
+
+### 常见问题
+
+1. **认证失败**
+   - 检查refresh_token是否正确
+   - 确保token没有过期或被撤销
+   - 尝试重新获取token
+
+2. **连接失败**
+   - 检查网络连接
+   - 如果需要代理，在配置中启用
+   - 检查Pixiv API是否可用
+
+3. **下载中断**
+   - 检查磁盘空间
+   - 查看日志文件 `/var/log/pixiv-backup.log`
+   - 可能是Pixiv速率限制，等待一段时间后重试
+
+4. **LuCI界面不显示**
+   - 确保安装了luci-app-pixiv-backup
+   - 检查LuCI主题兼容性
+   - 清除浏览器缓存
+
+### 日志查看
+
+```bash
+# 查看实时日志
+tail -f /var/log/pixiv-backup.log
+
+# 查看服务日志
+logread -e pixiv-backup
+
+# 在LuCI界面查看日志
+# 进入"服务" -> "Pixiv备份" -> "日志"
+```
+
+## 开发说明
+
+### 项目结构
+```
+pixiv-backup/
+├── Makefile                    # OpenWrt包构建文件
+├── src/
+│   ├── luci-app-pixiv-backup/  # LuCI界面
+│   │   ├── luasrc/
+│   │   │   ├── controller/     # 控制器
+│   │   │   ├── model/cbi/      # CBI配置文件
+│   │   │   └── view/          # 视图模板
+│   │   └── htdocs/            # 静态资源
+│   ├── pixiv-backup/          # Python主程序
+│   │   ├── main.py
+│   │   ├── modules/           # 核心模块
+│   │   ├── tools/             # 工具脚本
+│   │   └── requirements.txt   # Python依赖
+│   ├── init.d/               # init脚本
+│   └── config/               # 配置文件模板
+└── README.md                 # 本文档
+```
+
+### 修改配置
+
+配置文件位于 `/etc/config/pixiv-backup`，可以使用uci命令修改：
+
+```bash
+# 查看配置
+uci show pixiv-backup
+
+# 修改配置
+uci set pixiv-backup.main.user_id='123456'
+uci set pixiv-backup.main.enabled='1'
+uci commit pixiv-backup
+```
+
+## 许可证
+
+本项目采用 GPL-3.0 许可证开源。
+
+## 支持与反馈
+
+- 问题反馈: [GitHub Issues](https://github.com/yourusername/pixiv-backup/issues)
+- 功能建议: [GitHub Discussions](https://github.com/yourusername/pixiv-backup/discussions)
+
+## 注意事项
+
+1. **尊重版权**: 仅用于个人收藏，请勿用于商业用途
+2. **遵守条款**: 遵守Pixiv服务条款
+3. **合理使用**: 避免对Pixiv服务器造成过大压力
+4. **隐私保护**: 妥善保管你的refresh_token

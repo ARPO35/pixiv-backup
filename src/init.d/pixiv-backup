@@ -1,0 +1,156 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=01
+
+USE_PROCD=1
+PROG=/usr/bin/pixiv-backup
+
+start_service() {
+    # 检查配置
+    if ! /usr/bin/python3 -c "import sys; sys.path.insert(0, '/usr/share/pixiv-backup'); from modules.config_manager import ConfigManager; c = ConfigManager(); print('Config valid' if c.validate_required() else 'Config invalid')" 2>&1 | grep -q "Config valid"; then
+        echo "配置无效，请检查设置"
+        return 1
+    fi
+    
+    procd_open_instance
+    procd_set_param command "$PROG" --daemon
+    procd_set_param respawn
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param user nobody
+    procd_set_param pidfile /var/run/pixiv-backup.pid
+    procd_set_param limits nofile="1024 2048"
+    procd_close_instance
+    
+    echo "Pixiv备份服务已启动"
+}
+
+stop_service() {
+    echo "停止Pixiv备份服务..."
+    procd_kill
+    echo "服务已停止"
+}
+
+restart() {
+    stop
+    sleep iotnet
+    start
+}
+
+reload() {
+    restart
+}
+
+EXTRA_COMMANDS="test status"
+EXTRA_HELP="        test    测试配置和连接
+        status  查看服务状态"
+
+test() {
+    echo "测试Pixiv备份配置..."
+    
+    # 检查Python依赖
+    echo "检查Python依赖..."
+    if ! /usr/bin/python3 -c "import pixivpy3" 2>/dev/null; then
+        echo "错误: pixivpy3未安装"
+        return 1
+    fi
+    
+    if ! /usr/bin/python3 -c "import requests" 2>/dev/null; then
+        echo "错误: requests未安装"
+        return 1
+    fi
+    
+    echo "Python依赖检查通过"
+    
+    # 测试配置
+    echo "测试配置文件..."
+    if ! /usr/bin/python3 -c "
+import sys
+sys.path.insert(0, '/usr/share/pixiv-backup')
+from modules.config_manager import ConfigManager
+try:
+    config = ConfigManager()
+    if config.validate_required():
+        print('配置检查通过')
+        print(f'用户ID: {config.get_user_id()}')
+        print(f'输出目录: {config.get_output_dir()}')
+    else:
+        print('配置检查失败')
+except Exception as e:
+    print(f'配置错误: {e}')
+    " 2>&1; then
+        echo "配置测试失败"
+        return 1
+    fi
+    
+    # 测试API连接
+    echo "测试Pixiv API连接..."
+    if ! /usr/bin/python3 -c "
+import sys
+sys.path.insert(0, '/usr/share/pixiv-backup')
+from modules.config_manager import ConfigManager
+from modules.auth_manager import AuthManager
+try:
+    config = ConfigManager()
+    auth = AuthManager(config)
+    result = auth.test_connection()
+    if result['success']:
+        print('API连接测试通过')
+        if 'user_name' in result:
+            print(f'用户: {result[\"user_name\"]} (@{result[\"account\"]})')
+    else:
+        print(f'API连接失败: {result[\"error\"]}')
+except Exception as e:
+    print(f'连接测试错误: {e}')
+    " 2>&1; then
+        echo "API连接测试失败"
+        return 1
+    fi
+    
+    echo "所有测试通过！"
+    return 0
+}
+
+status() {
+    local pid
+    pid=$(pgrep -f "pixiv-backup")
+    
+    if [ -n "$pid" ]; then
+        echo "服务状态: 运行中 (PID: $pid)"
+        
+        # 显示运行信息
+        if [ -f "/var/run/pixiv-backup.pid" ]; then
+            echo "PID文件: /var/run/pixiv-backup.pid"
+        fi
+        
+        # 显示日志文件
+        local log_file="/var/log/pixiv-backup.log"
+        if [ -f "$log_file" ]; then
+            echo "日志文件: $log_file"
+            echo "最近日志:"
+            tail -5 "$log_file" 2>/dev/null || echo "无法读取日志"
+        fi
+    else
+        echo "服务状态: 已停止"
+    fi
+    
+    # 显示配置状态
+    echo ""
+    echo "配置状态:"
+    /usr/bin/python3 -c "
+import sys
+sys.path.insert(0, '/usr/share/pixiv-backup')
+from modules.config_manager import ConfigManager
+try:
+    config = ConfigManager()
+    print(f'用户ID: {config.get_user_id() or \"未设置\"}')
+    print(f'输出目录: {config.get_output_dir()}')
+    print(f'下载模式: {config.get_download_mode()}')
+    print(f'服务启用: {\"是\" if config.get(\"main\", \"enabled\") == \"1\" else \"否\"}')
+except Exception as e:
+    print(f'读取配置失败: {e}')
+    " 2>&1
+    
+    return 0
+}

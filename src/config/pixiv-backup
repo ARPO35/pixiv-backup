@@ -1,0 +1,25 @@
+config main 'settings'
+    option enabled '0'
+    option user_id ''
+    option refresh_token ''
+    option output_dir '/mnt/sda1/pixiv-backup'
+
+config download 'settings'
+    option mode 'bookmarks'
+    option restrict 'public'
+    option max_downloads '1000'
+
+config filter 'settings'
+    option min_bookmarks '0'
+    option r18_mode 'skip'
+    option include_tags ''
+    option exclude_tags ''
+
+config schedule 'settings'
+    option enabled '0'
+    option time '03:00'
+
+config network 'settings'
+    option proxy_enabled '0'
+    option proxy_url ''
+    option timeout '30'

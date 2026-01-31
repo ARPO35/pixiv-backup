@@ -1,0 +1,8 @@
+# Pixiv备份服务依赖
+pixivpy3>=3.6.0
+requests>=2.25.0
+aiohttp>=3.8.0
+Pillow>=9.0.0
+
+# 可选依赖（用于token获取）
+get-pixivpy-token>=1.0.0
