@@ -15,35 +15,67 @@
 
 ## 安装方法
 
-### 1. 编译安装（从源码）
-
-```bash
-# 克隆代码
-git clone https://github.com/yourusername/pixiv-backup.git
-
-# 进入目录
-cd pixiv-backup
-
-# 编译
-make menuconfig  # 选择 Utilities -> pixiv-backup, LuCI -> Applications -> luci-app-pixiv-backup
-make package/pixiv-backup/compile V=s
-make package/luci-app-pixiv-backup/compile V=s
-
-# 安装
-opkg install bin/packages/*/pixiv-backup*.ipk
-opkg install bin/packages/*/luci-app-pixiv-backup*.ipk
-```
-
-### 2. 直接安装（预编译包）
+### 1. 直接安装（预编译包，推荐）
 
 ```bash
 # 下载安装包
-wget https://github.com/yourusername/pixiv-backup/releases/download/v1.0.0/pixiv-backup_1.0.0-1_all.ipk
-wget https://github.com/yourusername/pixiv-backup/releases/download/v1.0.0/luci-app-pixiv-backup_1.0.0-1_all.ipk
+wget https://github.com/ARPO35/pixiv-backup/releases/download/v1.0.0/pixiv-backup_1.0.0-1_all.ipk
+wget https://github.com/ARPO35/pixiv-backup/releases/download/v1.0.0/luci-app-pixiv-backup_1.0.0-1_all.ipk
 
 # 安装
 opkg install pixiv-backup_1.0.0-1_all.ipk
 opkg install luci-app-pixiv-backup_1.0.0-1_all.ipk
+```
+
+### 2. GitHub Actions 自动编译
+
+本项目支持使用 GitHub Actions 自动编译 OpenWrt 包，无需本地配置编译环境。
+
+#### 使用方法：
+
+**方法 A：自动触发编译**
+1. Fork 本仓库到你的 GitHub 账号
+2. 推送代码到 `main` 或 `master` 分支
+3. 在 GitHub 仓库的 "Actions" 页面查看编译进度
+4. 编译完成后，在 Artifacts 中下载 `.ipk` 文件
+
+**方法 B：手动触发编译**
+1. 进入 GitHub 仓库的 "Actions" 页面
+2. 选择 "Build OpenWrt Package" 工作流
+3. 点击 "Run workflow" 按钮
+4. 选择分支并运行
+
+**方法 C：创建 Release**
+```bash
+# 创建并推送标签
+git tag v1.0.0
+git push origin v1.0.0
+```
+GitHub Actions 会自动编译并创建 Release，IPK 文件会附加到 Release 中。
+
+详细说明请查看：[`.github/workflows/README.md`](.github/workflows/README.md)
+
+### 3. 本地编译（需要 OpenWrt SDK）
+
+```bash
+# 克隆代码
+git clone https://github.com/ARPO35/pixiv-backup.git
+
+# 将项目复制到 OpenWrt SDK 的 package 目录
+cp -r pixiv-backup /path/to/openwrt-sdk/package/
+
+# 进入 OpenWrt SDK 目录
+cd /path/to/openwrt-sdk
+
+# 配置编译选项
+make menuconfig  # 选择 Utilities -> pixiv-backup, LuCI -> Applications -> luci-app-pixiv-backup
+
+# 编译
+make package/pixiv-backup/compile V=s
+
+# 安装
+opkg install bin/packages/*/pixiv-backup*.ipk
+opkg install bin/packages/*/luci-app-pixiv-backup*.ipk
 ```
 
 ## 配置步骤
@@ -259,8 +291,8 @@ uci commit pixiv-backup
 
 ## 支持与反馈
 
-- 问题反馈: [GitHub Issues](https://github.com/yourusername/pixiv-backup/issues)
-- 功能建议: [GitHub Discussions](https://github.com/yourusername/pixiv-backup/discussions)
+- 问题反馈: [GitHub Issues](https://github.com/ARPO35/pixiv-backup/issues)
+- 功能建议: [GitHub Discussions](https://github.com/ARPO35/pixiv-backup/discussions)
 
 ## 注意事项
 
