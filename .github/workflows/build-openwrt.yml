@@ -65,9 +65,9 @@ jobs:
           echo "=== 创建 feeds 索引 ==="
           ./scripts/feeds update -i
           
-          # 安装 feeds
-          echo "=== 安装 feeds ==="
-          ./scripts/feeds install -a
+          # 只安装必要的 feeds（避免编译不需要的依赖）
+          echo "=== 安装必要的 feeds ==="
+          ./scripts/feeds install luci-base lua libubus-lua || true
 
       - name: 复制包到 SDK
         run: |

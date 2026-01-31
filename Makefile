@@ -28,7 +28,7 @@ define Package/luci-app-pixiv-backup
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=LuCI Interface for Pixiv Backup
-  DEPENDS:=+pixiv-backup +luci-base
+  DEPENDS:=+pixiv-backup
   PKGARCH:=all
 endef
 
