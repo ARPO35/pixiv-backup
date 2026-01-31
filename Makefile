@@ -14,7 +14,7 @@ define Package/pixiv-backup
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Pixiv Backup Service for OpenWrt
-  DEPENDS:=+python3 +python3-pip +python3-aiohttp +python3-sqlite3 +python3-pillow +python3-requests
+  DEPENDS:=+python3 +python3-requests
   PKGARCH:=all
 endef
 
@@ -27,8 +27,8 @@ define Package/luci-app-pixiv-backup
   SECTION:=luci
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
-  TITLE:=LuCI界面 for Pixiv Backup
-  DEPENDS:=+pixiv-backup +luci +luci-compat +luci-lib-json
+  TITLE:=LuCI Interface for Pixiv Backup
+  DEPENDS:=+pixiv-backup +luci-base
   PKGARCH:=all
 endef
 
@@ -36,44 +36,55 @@ define Package/luci-app-pixiv-backup/description
   LuCI Configuration Interface for Pixiv Backup Service.
 endef
 
+define Build/Prepare
+	mkdir -p $(PKG_BUILD_DIR)
+	$(CP) ./src/* $(PKG_BUILD_DIR)/
+endef
+
 define Build/Configure
-  true
 endef
 
 define Build/Compile
-  true
 endef
 
 # 主程序安装
 define Package/pixiv-backup/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) ./src/pixiv-backup/main.py $(1)/usr/bin/pixiv-backup
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/pixiv-backup/main.py $(1)/usr/bin/pixiv-backup
 	
 	$(INSTALL_DIR) $(1)/usr/share/pixiv-backup
-	$(CP) ./src/pixiv-backup/*.py $(1)/usr/share/pixiv-backup/
-	$(CP) ./src/pixiv-backup/modules $(1)/usr/share/pixiv-backup/
-	$(CP) ./src/pixiv-backup/tools $(1)/usr/share/pixiv-backup/
+	$(CP) $(PKG_BUILD_DIR)/pixiv-backup/*.py $(1)/usr/share/pixiv-backup/
+	
+	$(INSTALL_DIR) $(1)/usr/share/pixiv-backup/modules
+	$(CP) $(PKG_BUILD_DIR)/pixiv-backup/modules/*.py $(1)/usr/share/pixiv-backup/modules/
+	
+	$(INSTALL_DIR) $(1)/usr/share/pixiv-backup/tools
+	$(CP) $(PKG_BUILD_DIR)/pixiv-backup/tools/*.py $(1)/usr/share/pixiv-backup/tools/
 	
 	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./src/init.d/pixiv-backup $(1)/etc/init.d/pixiv-backup
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/init.d/pixiv-backup $(1)/etc/init.d/pixiv-backup
 	
 	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_DATA) ./src/config/pixiv-backup $(1)/etc/config/pixiv-backup
+	$(INSTALL_CONF) $(PKG_BUILD_DIR)/config/pixiv-backup $(1)/etc/config/pixiv-backup
 	
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
-	$(INSTALL_DATA) ./src/hotplug/99-pixiv-backup $(1)/etc/hotplug.d/iface/99-pixiv-backup
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/hotplug/99-pixiv-backup $(1)/etc/hotplug.d/iface/99-pixiv-backup
 endef
 
 # LuCI界面安装
 define Package/luci-app-pixiv-backup/install
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
-	$(INSTALL_DATA) ./src/luci-app-pixiv-backup/luasrc/controller/pixiv-backup.lua $(1)/usr/lib/lua/luci/controller/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci-app-pixiv-backup/luasrc/controller/pixiv-backup.lua $(1)/usr/lib/lua/luci/controller/
 	
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi
-	$(INSTALL_DATA) ./src/luci-app-pixiv-backup/luasrc/model/cbi/pixiv-backup.lua $(1)/usr/lib/lua/luci/model/cbi/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci-app-pixiv-backup/luasrc/model/cbi/pixiv-backup.lua $(1)/usr/lib/lua/luci/model/cbi/
 	
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view
-	$(INSTALL_DATA) ./src/luci-app-pixiv-backup/luasrc/view/pixiv-backup.htm $(1)/usr/lib/lua/luci/view/
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/pixiv-backup
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci-app-pixiv-backup/luasrc/view/pixiv-backup.htm $(1)/usr/lib/lua/luci/view/pixiv-backup/
+endef
+
+define Package/pixiv-backup/conffiles
+/etc/config/pixiv-backup
 endef
 
 $(eval $(call BuildPackage,pixiv-backup))

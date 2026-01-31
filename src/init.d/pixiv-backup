@@ -34,7 +34,7 @@ stop_service() {
 
 restart() {
     stop
-    sleep iotnet
+    sleep 1
     start
 }
 
