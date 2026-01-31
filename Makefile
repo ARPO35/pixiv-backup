@@ -62,9 +62,6 @@ define Package/pixiv-backup/install
 	
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
 	$(INSTALL_DATA) ./src/hotplug/99-pixiv-backup $(1)/etc/hotplug.d/iface/99-pixiv-backup
-	
-	$(INSTALL_DIR) $(1)/usr/share/pixiv-backup/templates
-	$(INSTALL_DATA) ./src/pixiv-backup/templates/* $(1)/usr/share/pixiv-backup/templates/
 endef
 
 # LuCI界面安装
@@ -77,9 +74,6 @@ define Package/luci-app-pixiv-backup/install
 	
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view
 	$(INSTALL_DATA) ./src/luci-app-pixiv-backup/luasrc/view/pixiv-backup.htm $(1)/usr/lib/lua/luci/view/
-	
-	$(INSTALL_DIR) $(1)/www/luci-static/resources/pixiv-backup
-	$(INSTALL_DATA) ./src/luci-app-pixiv-backup/htdocs/* $(1)/www/luci-static/resources/pixiv-backup/
 endef
 
 $(eval $(call BuildPackage,pixiv-backup))
