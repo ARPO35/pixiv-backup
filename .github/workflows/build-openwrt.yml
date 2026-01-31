@@ -77,9 +77,18 @@ jobs:
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
+      - name: 编译工具链和主机工具
+        run: |
+          cd openwrt
+          echo "开始编译主机工具..."
+          make tools/install -j$(nproc) V=s || make tools/install -j1 V=s
+          echo "开始编译工具链..."
+          make toolchain/install -j$(nproc) V=s || make toolchain/install -j1 V=s
+
       - name: 编译包
         run: |
           cd openwrt
+          echo "开始编译 ${{ env.PACKAGE_NAME }} 包..."
           make package/${{ env.PACKAGE_NAME }}/compile V=s -j$(nproc) || \
           make package/${{ env.PACKAGE_NAME }}/compile V=s -j1
 
