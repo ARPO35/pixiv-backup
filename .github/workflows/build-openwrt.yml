@@ -22,7 +22,7 @@ jobs:
     
     steps:
       - name: 检出代码
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -46,19 +46,22 @@ jobs:
         run: |
           cd openwrt-sdk
           
-          # 手动克隆 feeds 仓库（避免 feeds update 克隆失败问题）
-          echo "=== 手动克隆 feeds 仓库 ==="
+          # 使用 GitHub 镜像克隆 feeds 仓库（避免 git.openwrt.org 503 错误）
+          echo "=== 克隆 feeds 仓库（使用 GitHub 镜像）==="
           mkdir -p feeds
+          
+          # 尝试 GitHub 镜像，失败则尝试官方源
+          git clone --depth 1 -b openwrt-23.05 https://github.com/openwrt/packages.git feeds/packages || \
           git clone --depth 1 -b openwrt-23.05 https://git.openwrt.org/feed/packages.git feeds/packages
+          
+          git clone --depth 1 -b openwrt-23.05 https://github.com/openwrt/luci.git feeds/luci || \
           git clone --depth 1 -b openwrt-23.05 https://git.openwrt.org/project/luci.git feeds/luci
           
           # 验证 feeds 目录
           echo "=== 检查 feeds 目录 ==="
           ls -la feeds/
-          ls -la feeds/packages/ | head -20
-          ls -la feeds/luci/ | head -20
           
-          # 创建 feeds 索引（使用 -i 参数只创建索引，不克隆）
+          # 创建 feeds 索引
           echo "=== 创建 feeds 索引 ==="
           ./scripts/feeds update -i
           
@@ -70,36 +73,56 @@ jobs:
         run: |
           mkdir -p openwrt-sdk/package/${{ env.PACKAGE_NAME }}
           cp -r Makefile src openwrt-sdk/package/${{ env.PACKAGE_NAME }}/
+          
+          # 显示复制的文件
+          echo "=== 包文件结构 ==="
+          find openwrt-sdk/package/${{ env.PACKAGE_NAME }} -type f
 
       - name: 配置编译选项
         run: |
           cd openwrt-sdk
-          cat > .config << EOF
-          CONFIG_PACKAGE_${{ env.PACKAGE_NAME }}=m
-          CONFIG_PACKAGE_luci-app-${{ env.PACKAGE_NAME }}=m
+          
+          # 创建配置
+          cat > .config << 'EOF'
+          CONFIG_PACKAGE_pixiv-backup=m
+          CONFIG_PACKAGE_luci-app-pixiv-backup=m
           EOF
+          
           make defconfig
+          
+          # 显示相关配置
+          echo "=== 包配置 ==="
+          grep -E "pixiv-backup" .config || echo "未找到包配置"
 
       - name: 编译包
         run: |
           cd openwrt-sdk
           echo "开始编译 ${{ env.PACKAGE_NAME }} 包..."
-          make package/${{ env.PACKAGE_NAME }}/compile V=s -j$(nproc) || \
-          make package/${{ env.PACKAGE_NAME }}/compile V=s -j1
+          
+          # 先尝试多线程编译，失败则单线程
+          make package/${{ env.PACKAGE_NAME }}/compile V=s -j$(nproc) 2>&1 || \
+          make package/${{ env.PACKAGE_NAME }}/compile V=s -j1 2>&1
 
       - name: 查找编译产物
         id: find_ipk
         run: |
           cd openwrt-sdk
-          IPK_FILES=$(find bin/packages -name "${{ env.PACKAGE_NAME }}*.ipk" -o -name "luci-app-${{ env.PACKAGE_NAME }}*.ipk" 2>/dev/null || true)
+          
+          echo "=== 搜索 IPK 文件 ==="
+          find bin/ -name "*.ipk" 2>/dev/null || echo "bin目录中没有ipk文件"
+          
+          IPK_FILES=$(find bin/ -name "*.ipk" 2>/dev/null | grep -E "(pixiv-backup|luci-app-pixiv-backup)" || true)
           echo "找到的 IPK 文件："
           echo "$IPK_FILES"
+          
           mkdir -p ../artifacts
           if [ -n "$IPK_FILES" ]; then
             cp $IPK_FILES ../artifacts/
             echo "has_artifacts=true" >> $GITHUB_OUTPUT
+            ls -la ../artifacts/
           else
             echo "has_artifacts=false" >> $GITHUB_OUTPUT
+            echo "未找到编译产物，检查编译日志"
           fi
 
       - name: 上传编译产物
@@ -126,8 +149,8 @@ jobs:
           echo "### 安装方法" >> release_info.md
           echo "\`\`\`bash" >> release_info.md
           echo "# 上传 IPK 文件到 OpenWrt 设备后执行：" >> release_info.md
-          echo "opkg install ${{ env.PACKAGE_NAME }}*.ipk" >> release_info.md
-          echo "opkg install luci-app-${{ env.PACKAGE_NAME }}*.ipk" >> release_info.md
+          echo "opkg install pixiv-backup*.ipk" >> release_info.md
+          echo "opkg install luci-app-pixiv-backup*.ipk" >> release_info.md
           echo "\`\`\`" >> release_info.md
           cat release_info.md
 
