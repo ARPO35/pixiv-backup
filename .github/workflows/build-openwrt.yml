@@ -45,6 +45,9 @@ jobs:
       - name: 更新和安装 feeds
         run: |
           cd openwrt-sdk
+          # 只保留必要的 feeds（packages 和 luci），避免 routing/telephony feeds 缺失错误
+          echo "src-git packages https://git.openwrt.org/feed/packages.git;openwrt-23.05" > feeds.conf
+          echo "src-git luci https://git.openwrt.org/project/luci.git;openwrt-23.05" >> feeds.conf
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
