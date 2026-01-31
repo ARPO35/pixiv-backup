@@ -12,8 +12,15 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
-# 添加当前目录到路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 添加模块搜索路径
+# 支持直接运行和安装后运行
+_possible_paths = [
+    os.path.dirname(os.path.abspath(__file__)),  # 直接运行
+    "/usr/share/pixiv-backup",                    # 安装后
+]
+for path in _possible_paths:
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 from modules.config_manager import ConfigManager
 from modules.auth_manager import AuthManager

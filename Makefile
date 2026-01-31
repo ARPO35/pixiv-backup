@@ -49,9 +49,6 @@ endef
 
 # 主程序安装
 define Package/pixiv-backup/install
-	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/pixiv-backup/main.py $(1)/usr/bin/pixiv-backup
-	
 	$(INSTALL_DIR) $(1)/usr/share/pixiv-backup
 	$(CP) $(PKG_BUILD_DIR)/pixiv-backup/*.py $(1)/usr/share/pixiv-backup/
 	
@@ -60,6 +57,9 @@ define Package/pixiv-backup/install
 	
 	$(INSTALL_DIR) $(1)/usr/share/pixiv-backup/tools
 	$(CP) $(PKG_BUILD_DIR)/pixiv-backup/tools/*.py $(1)/usr/share/pixiv-backup/tools/
+	
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/pixiv-backup/main.py $(1)/usr/bin/pixiv-backup
 	
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/init.d/pixiv-backup $(1)/etc/init.d/pixiv-backup
