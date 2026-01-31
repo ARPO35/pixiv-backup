@@ -100,7 +100,7 @@ jobs:
 
       - name: 上传编译产物
         if: steps.find_ipk.outputs.has_artifacts == 'true'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PACKAGE_NAME }}-ipk
           path: artifacts/*.ipk
