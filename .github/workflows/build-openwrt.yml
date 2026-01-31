@@ -46,25 +46,24 @@ jobs:
         run: |
           cd openwrt-sdk
           
-          # 使用 SDK 自带的 feeds 配置，但只启用 packages 和 luci
-          sed -i '/^src-git routing/d' feeds.conf.default
-          sed -i '/^src-git telephony/d' feeds.conf.default
-          cp feeds.conf.default feeds.conf
+          # 手动克隆 feeds 仓库（避免 feeds update 克隆失败问题）
+          echo "=== 手动克隆 feeds 仓库 ==="
+          mkdir -p feeds
+          git clone --depth 1 -b openwrt-23.05 https://git.openwrt.org/feed/packages.git feeds/packages
+          git clone --depth 1 -b openwrt-23.05 https://git.openwrt.org/project/luci.git feeds/luci
           
-          # 显示 feeds 配置
-          echo "=== feeds.conf ==="
-          cat feeds.conf
-          
-          # 更新 feeds（带详细输出）
-          echo "=== Updating feeds ==="
-          ./scripts/feeds update -a -v || { echo "feeds update failed"; exit 1; }
-          
-          # 检查 feeds 目录
-          echo "=== Checking feeds directories ==="
+          # 验证 feeds 目录
+          echo "=== 检查 feeds 目录 ==="
           ls -la feeds/
+          ls -la feeds/packages/ | head -20
+          ls -la feeds/luci/ | head -20
+          
+          # 创建 feeds 索引（使用 -i 参数只创建索引，不克隆）
+          echo "=== 创建 feeds 索引 ==="
+          ./scripts/feeds update -i
           
           # 安装 feeds
-          echo "=== Installing feeds ==="
+          echo "=== 安装 feeds ==="
           ./scripts/feeds install -a
 
       - name: 复制包到 SDK
