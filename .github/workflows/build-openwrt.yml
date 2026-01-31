@@ -45,10 +45,26 @@ jobs:
       - name: 更新和安装 feeds
         run: |
           cd openwrt-sdk
-          # 只保留必要的 feeds（packages 和 luci），避免 routing/telephony feeds 缺失错误
-          echo "src-git packages https://git.openwrt.org/feed/packages.git;openwrt-23.05" > feeds.conf
-          echo "src-git luci https://git.openwrt.org/project/luci.git;openwrt-23.05" >> feeds.conf
-          ./scripts/feeds update -a
+          
+          # 使用 SDK 自带的 feeds 配置，但只启用 packages 和 luci
+          sed -i '/^src-git routing/d' feeds.conf.default
+          sed -i '/^src-git telephony/d' feeds.conf.default
+          cp feeds.conf.default feeds.conf
+          
+          # 显示 feeds 配置
+          echo "=== feeds.conf ==="
+          cat feeds.conf
+          
+          # 更新 feeds（带详细输出）
+          echo "=== Updating feeds ==="
+          ./scripts/feeds update -a -v || { echo "feeds update failed"; exit 1; }
+          
+          # 检查 feeds 目录
+          echo "=== Checking feeds directories ==="
+          ls -la feeds/
+          
+          # 安装 feeds
+          echo "=== Installing feeds ==="
           ./scripts/feeds install -a
 
       - name: 复制包到 SDK
