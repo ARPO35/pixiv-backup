@@ -93,66 +93,66 @@ class ConfigManager:
         
     def get_download_mode(self):
         """获取下载模式"""
-        return self.get("download", "mode", "bookmarks")
+        return self.get("main", "mode", "bookmarks")
         
     def get_restrict_mode(self):
         """获取内容范围"""
-        return self.get("download", "restrict", "public")
+        return self.get("main", "restrict", "public")
         
     def get_max_downloads(self):
         """获取最大下载数量"""
         try:
-            return int(self.get("download", "max_downloads", "1000"))
+            return int(self.get("main", "max_downloads", "1000"))
         except:
             return 1000
             
     def get_r18_mode(self):
         """获取R18处理模式"""
-        return self.get("filter", "r18_mode", "skip")
+        return self.get("main", "r18_mode", "skip")
         
     def get_min_bookmarks(self):
         """获取最小收藏数"""
         try:
-            return int(self.get("filter", "min_bookmarks", "0"))
+            return int(self.get("main", "min_bookmarks", "0"))
         except:
             return 0
             
     def get_include_tags(self):
         """获取包含标签"""
-        tags_str = self.get("filter", "include_tags", "")
+        tags_str = self.get("main", "include_tags", "")
         if tags_str:
             return [tag.strip() for tag in tags_str.split(',')]
         return []
         
     def get_exclude_tags(self):
         """获取排除标签"""
-        tags_str = self.get("filter", "exclude_tags", "")
+        tags_str = self.get("main", "exclude_tags", "")
         if tags_str:
             return [tag.strip() for tag in tags_str.split(',')]
         return []
         
     def is_proxy_enabled(self):
         """是否启用代理"""
-        return self.get("network", "proxy_enabled", "0") == "1"
+        return self.get("main", "proxy_enabled", "0") == "1"
         
     def get_proxy_url(self):
         """获取代理URL"""
-        return self.get("network", "proxy_url")
+        return self.get("main", "proxy_url")
         
     def get_timeout(self):
         """获取超时时间"""
         try:
-            return int(self.get("network", "timeout", "30"))
+            return int(self.get("main", "timeout", "30"))
         except:
             return 30
             
     def is_schedule_enabled(self):
         """是否启用定时任务"""
-        return self.get("schedule", "enabled", "0") == "1"
+        return self.get("main", "schedule_enabled", "0") == "1"
         
     def get_schedule_time(self):
         """获取定时任务时间"""
-        return self.get("schedule", "time", "03:00")
+        return self.get("main", "schedule_time", "03:00")
         
     def get_next_schedule_time(self):
         """计算下一次运行时间"""
