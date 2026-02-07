@@ -82,6 +82,15 @@ class PixivCrawler:
             return
         if self.low_speed_interval_seconds > 0:
             time.sleep(self.low_speed_interval_seconds)
+
+    def _illust_url(self, illust_id):
+        return f"https://www.pixiv.net/artworks/{illust_id}"
+
+    def _with_illust_context(self, illust_id, error_msg):
+        msg = (error_msg or "").strip()
+        if not msg:
+            msg = "未知错误"
+        return f"pid={illust_id} url={self._illust_url(illust_id)} error={msg}"
         
     def download_user_bookmarks(self, user_id, max_downloads_override=None):
         """下载用户收藏"""
@@ -342,7 +351,10 @@ class PixivCrawler:
                 if ugoira_info and "ugoira_metadata" in ugoira_info:
                     result = self.downloader.download_ugoira(illust, ugoira_info["ugoira_metadata"])
                 else:
-                    return {"success": False, "error": "无法获取动图信息"}
+                    return {
+                        "success": False,
+                        "error": self._with_illust_context(illust_id, "无法获取动图信息")
+                    }
             else:
                 # 静态图片：优先下载原图，支持多图逐页下载
                 result = self._download_illust_images(illust)
@@ -356,11 +368,14 @@ class PixivCrawler:
             elif result.get("skipped", False):
                 # 标记为已下载（因为已存在）
                 self.database.mark_as_downloaded(illust_id, "已存在", 0)
+            else:
+                if result.get("error"):
+                    result["error"] = self._with_illust_context(illust_id, result.get("error"))
                 
             return result
             
         except Exception as e:
-            error_msg = f"下载失败: {str(e)}"
+            error_msg = self._with_illust_context(illust_id, f"下载失败: {str(e)}")
             self.logger.error(f"作品 {illust_id} {error_msg}")
             self.database.record_download_error(illust_id, error_msg)
             return {"success": False, "error": error_msg}
