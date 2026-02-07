@@ -78,25 +78,15 @@ class DownloadManager:
         # 这里假设数据库管理器已经标记了已下载的作品
         # 实际实现中会调用数据库管理器的方法
         
-        # 同时检查文件是否存在
-        img_dir = self.config.get_image_dir()
-        possible_files = [
-            img_dir / f"{illust_id}.jpg",
-            img_dir / f"{illust_id}.png",
-            img_dir / f"{illust_id}.gif",
-            img_dir / f"{illust_id}.jpeg"
-        ]
-        
-        for file_path in possible_files:
-            if file_path.exists():
-                return True
-                
-        return False
+        # 同时检查文件是否存在：img/<illust_id>/ 下任意文件
+        illust_dir = self.config.get_image_dir() / str(illust_id)
+        if not illust_dir.exists():
+            return False
+        return any(p.is_file() for p in illust_dir.iterdir())
         
     def _get_save_path(self, url, illust_info, page_index=None):
         """获取保存路径"""
         illust_id = illust_info["id"]
-        user_id = illust_info["user"]["id"]
         
         # 根据URL确定扩展名
         parsed = urlparse(url)
@@ -109,24 +99,23 @@ class DownloadManager:
             # 默认使用jpg
             ext = "jpg"
             
-        # 创建目录结构: img/user_id/illust_id(.pN).ext
-        user_dir = self.config.get_image_dir() / str(user_id)
-        user_dir.mkdir(parents=True, exist_ok=True)
+        # 创建目录结构: img/illust_id/illust_id(.pN).ext
+        illust_dir = self.config.get_image_dir() / str(illust_id)
+        illust_dir.mkdir(parents=True, exist_ok=True)
 
         if page_index is not None:
-            return user_dir / f"{illust_id}.p{page_index}.{ext}"
-        return user_dir / f"{illust_id}.{ext}"
+            return illust_dir / f"{illust_id}.p{page_index}.{ext}"
+        return illust_dir / f"{illust_id}.{ext}"
         
     def _save_metadata(self, illust_info):
         """保存元数据"""
         illust_id = illust_info["id"]
-        user_id = illust_info["user"]["id"]
-        
-        # 创建目录结构: metadata/user_id/illust_id.json
-        user_dir = self.config.get_metadata_dir() / str(user_id)
-        user_dir.mkdir(parents=True, exist_ok=True)
-        
-        metadata_path = user_dir / f"{illust_id}.json"
+
+        # 创建目录结构: metadata/illust_id.json
+        metadata_dir = self.config.get_metadata_dir()
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+
+        metadata_path = metadata_dir / f"{illust_id}.json"
         
         # 准备元数据
         metadata = {
@@ -216,10 +205,9 @@ class DownloadManager:
     def _get_ugoira_save_path(self, illust_info):
         """获取动图保存路径"""
         illust_id = illust_info["id"]
-        user_id = illust_info["user"]["id"]
         
-        # 创建目录结构: img/user_id/ugoira/illust_id.zip
-        ugoira_dir = self.config.get_image_dir() / str(user_id) / "ugoira"
+        # 创建目录结构: img/illust_id/illust_id.zip
+        ugoira_dir = self.config.get_image_dir() / str(illust_id)
         ugoira_dir.mkdir(parents=True, exist_ok=True)
         
         return ugoira_dir / f"{illust_id}.zip"
