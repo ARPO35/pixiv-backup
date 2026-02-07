@@ -240,9 +240,8 @@ class PixivCrawler:
                 else:
                     return {"success": False, "error": "无法获取动图信息"}
             else:
-                # 静态图片
-                image_url = illust["image_urls"]["large"]
-                result = self.downloader.download_image(image_url, illust)
+                # 静态图片：优先下载原图，支持多图逐页下载
+                result = self._download_illust_images(illust)
                 
             # 处理下载结果
             if result["success"]:
@@ -261,6 +260,48 @@ class PixivCrawler:
             self.logger.error(f"作品 {illust_id} {error_msg}")
             self.database.record_download_error(illust_id, error_msg)
             return {"success": False, "error": error_msg}
+
+    def _download_illust_images(self, illust):
+        """下载静态作品图片（优先原图）"""
+        # 多图作品：优先使用 meta_pages[].image_urls.original
+        meta_pages = illust.get("meta_pages") or []
+        if isinstance(meta_pages, list) and len(meta_pages) > 0:
+            total_size = 0
+            downloaded = 0
+            first_path = None
+
+            for idx, page in enumerate(meta_pages):
+                image_urls = page.get("image_urls", {}) if isinstance(page, dict) else {}
+                image_url = image_urls.get("original") or image_urls.get("large")
+                if not image_url:
+                    continue
+
+                r = self.downloader.download_image(image_url, illust, page_index=idx)
+                if not r.get("success"):
+                    return r
+                downloaded += 1
+                total_size += r.get("file_size", 0) or 0
+                if not first_path:
+                    first_path = r.get("file_path")
+
+            if downloaded == 0:
+                return {"success": False, "error": "未找到可下载图片链接"}
+            return {
+                "success": True,
+                "file_path": first_path or "",
+                "file_size": total_size,
+                "message": f"多图下载成功: {downloaded} 页"
+            }
+
+        # 单图作品：优先 meta_single_page.original_image_url，回退 large
+        single = illust.get("meta_single_page", {}) if isinstance(illust.get("meta_single_page"), dict) else {}
+        image_url = single.get("original_image_url")
+        if not image_url:
+            image_url = illust.get("image_urls", {}).get("original") or illust.get("image_urls", {}).get("large")
+        if not image_url:
+            return {"success": False, "error": "未找到可下载图片链接"}
+
+        return self.downloader.download_image(image_url, illust)
             
     def test_connection(self):
         """测试连接"""

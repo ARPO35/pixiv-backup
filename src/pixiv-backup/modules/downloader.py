@@ -29,7 +29,7 @@ class DownloadManager:
                 
         self.timeout = self.config.get_timeout()
         
-    def download_image(self, url, illust_info):
+    def download_image(self, url, illust_info, page_index=None):
         """下载图片"""
         try:
             # 检查是否已下载
@@ -38,7 +38,7 @@ class DownloadManager:
                 return {"success": False, "skipped": True, "message": "已存在"}
                 
             # 创建保存路径
-            save_path = self._get_save_path(illust_info)
+            save_path = self._get_save_path(url, illust_info, page_index)
             save_path.parent.mkdir(parents=True, exist_ok=True)
             
             # 下载图片
@@ -93,14 +93,12 @@ class DownloadManager:
                 
         return False
         
-    def _get_save_path(self, illust_info):
+    def _get_save_path(self, url, illust_info, page_index=None):
         """获取保存路径"""
         illust_id = illust_info["id"]
         user_id = illust_info["user"]["id"]
-        illust_type = illust_info.get("type", "illust")
         
-        # 根据作品类型确定扩展名
-        url = illust_info["image_urls"]["large"]
+        # 根据URL确定扩展名
         parsed = urlparse(url)
         filename = parsed.path.split("/")[-1]
         
@@ -111,10 +109,12 @@ class DownloadManager:
             # 默认使用jpg
             ext = "jpg"
             
-        # 创建目录结构: img/user_id/illust_id.ext
+        # 创建目录结构: img/user_id/illust_id(.pN).ext
         user_dir = self.config.get_image_dir() / str(user_id)
         user_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        if page_index is not None:
+            return user_dir / f"{illust_id}.p{page_index}.{ext}"
         return user_dir / f"{illust_id}.{ext}"
         
     def _save_metadata(self, illust_info):
