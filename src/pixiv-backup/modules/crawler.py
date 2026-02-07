@@ -171,8 +171,9 @@ class PixivCrawler:
                         stats["hit_max_downloads"] = True
                         break
                         
-                    # 高低速队列节奏
-                    self._queue_sleep(stats["total"])
+                    # 高低速队列节奏：跳过项不等待（未发起下载请求）
+                    if not dl_result.get("skipped", False):
+                        self._queue_sleep(stats["total"])
 
                 if stats.get("rate_limited"):
                     break
@@ -292,8 +293,9 @@ class PixivCrawler:
                         stats["hit_max_downloads"] = True
                         break
                         
-                    # 高低速队列节奏
-                    self._queue_sleep(stats["total"])
+                    # 高低速队列节奏：跳过项不等待（未发起下载请求）
+                    if not dl_result.get("skipped", False):
+                        self._queue_sleep(stats["total"])
 
                 if stats.get("rate_limited"):
                     break
