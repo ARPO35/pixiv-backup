@@ -29,8 +29,7 @@ function action_status()
     }
     
     -- 检查服务状态
-    local service_pid = sys.exec("pgrep -f 'pixiv-backup' 2>/dev/null")
-    if service_pid and service_pid ~= "" then
+    if sys.call("/etc/init.d/pixiv-backup running >/dev/null 2>&1") == 0 then
         result.service_status = "running"
     end
     
@@ -119,7 +118,7 @@ function action_start()
     local sys = require("luci.sys")
     local http = require("luci.http")
     
-    local result = sys.exec("/etc/init.d/pixiv-backup start 2>&1")
+    local result = sys.exec("/etc/init.d/pixiv-backup restart 2>&1")
     http.prepare_content("text/plain; charset=utf-8")
     http.write(result or "服务启动命令已执行")
 end

@@ -11,6 +11,14 @@ if not uci:get("pixiv-backup", "settings") then
 end
 
 m = Map("pixiv-backup", "Pixiv备份设置", "配置Pixiv收藏和关注列表的自动备份服务")
+m.on_after_commit = function(self)
+    local enabled_value = uci:get("pixiv-backup", "settings", "enabled")
+    if enabled_value == "1" then
+        sys.call("/etc/init.d/pixiv-backup enable >/dev/null 2>&1")
+    else
+        sys.call("/etc/init.d/pixiv-backup disable >/dev/null 2>&1")
+    end
+end
 
 s = m:section(NamedSection, "settings", "main", "配置")
 s.anonymous = false
@@ -124,8 +132,7 @@ end
 local service_status = status_section:option(DummyValue, "_status", "服务状态")
 service_status.rawhtml = true
 service_status.cfgvalue = function(self, section)
-    local pid = sys.exec("pgrep -f 'pixiv-backup' 2>/dev/null")
-    if pid and pid ~= "" then
+    if sys.call("/etc/init.d/pixiv-backup running >/dev/null 2>&1") == 0 then
         return '<span style="color: green; font-weight: bold;">● 运行中</span>'
     else
         return '<span style="color: red; font-weight: bold;">● 已停止</span>'
@@ -179,14 +186,14 @@ local start_btn = status_section:option(Button, "_start", "手动备份")
 start_btn.inputtitle = "立即开始备份"
 start_btn.inputstyle = "apply"
 start_btn.write = function(self, section)
-    sys.exec("/etc/init.d/pixiv-backup start &")
+    sys.exec("/etc/init.d/pixiv-backup restart >/tmp/pixiv-backup-start.log 2>&1")
 end
 
 local stop_btn = status_section:option(Button, "_stop", "停止服务")
 stop_btn.inputtitle = "停止备份"
 stop_btn.inputstyle = "reset"
 stop_btn.write = function(self, section)
-    sys.exec("/etc/init.d/pixiv-backup stop")
+    sys.exec("/etc/init.d/pixiv-backup stop >/tmp/pixiv-backup-stop.log 2>&1")
 end
 
 return m
