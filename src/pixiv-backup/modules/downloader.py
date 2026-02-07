@@ -18,15 +18,6 @@ class DownloadManager:
             "Referer": "https://www.pixiv.net/"
         })
         
-        # 配置代理
-        if self.config.is_proxy_enabled():
-            proxy_url = self.config.get_proxy_url()
-            if proxy_url:
-                self.session.proxies = {
-                    "http": proxy_url,
-                    "https": proxy_url
-                }
-                
         self.timeout = self.config.get_timeout()
         
     def download_image(self, url, illust_info, page_index=None):

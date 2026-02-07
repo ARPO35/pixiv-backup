@@ -95,6 +95,9 @@ class PixivBackupService:
     def _status_file(self):
         return Path(self.config.get_output_dir()) / "data" / "status.json"
 
+    def _force_flag_file(self):
+        return Path(self.config.get_output_dir()) / "data" / "force_run.flag"
+
     def _read_runtime_status(self):
         status_file = self._status_file()
         if not status_file.exists():
@@ -117,6 +120,33 @@ class PixivBackupService:
     def _on_progress(self, payload):
         self._write_runtime_status(payload)
 
+    def _consume_force_run_flag(self):
+        flag = self._force_flag_file()
+        if flag.exists():
+            try:
+                flag.unlink()
+            except Exception:
+                pass
+            return True
+        return False
+
+    def wait_with_force_run(self, wait_seconds):
+        """等待冷却/间隔，并支持被 force_run.flag 中断"""
+        remaining = int(wait_seconds)
+        while remaining > 0:
+            if self._consume_force_run_flag():
+                self.logger.info("检测到立即备份请求，跳过当前等待")
+                self._write_runtime_status({
+                    "state": "idle",
+                    "phase": "force_triggered",
+                    "message": "收到立即备份请求，开始新一轮同步"
+                })
+                return True
+            step = 1 if remaining > 1 else remaining
+            time.sleep(step)
+            remaining -= step
+        return False
+
     def _merge_stats(self, base, part):
         for key in ("success", "failed", "skipped", "total"):
             base[key] = base.get(key, 0) + int(part.get(key, 0) or 0)
@@ -126,7 +156,7 @@ class PixivBackupService:
             base["last_error"] = part.get("last_error")
         return base
             
-    def run(self):
+    def run(self, max_download_limit=None):
         """运行备份服务"""
         self.logger.info("开始Pixiv备份服务")
         self._write_runtime_status({
@@ -155,7 +185,7 @@ class PixivBackupService:
             # 根据配置运行不同的下载模式
             download_mode = self.config.get_download_mode()
             user_id = self.config.get_user_id()
-            max_per_sync = self.config.get_max_downloads()
+            max_per_sync = self.config.get_max_downloads() if max_download_limit is None else int(max_download_limit)
             remaining_downloads = max_per_sync if max_per_sync > 0 else 0
             
             stats = {
@@ -285,6 +315,7 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description="Pixiv 备份服务")
     parser.add_argument("command", nargs="?", choices=["run", "status"], default="run")
+    parser.add_argument("count", nargs="?", type=int, help="run 模式单次下载数量")
     parser.add_argument("--daemon", action="store_true", help="守护进程模式")
     args = parser.parse_args()
 
@@ -303,7 +334,6 @@ def main():
         print(f"用户ID: {config.get_user_id() or '未设置'}")
         print(f"输出目录: {config.get_output_dir()}")
         print(f"下载模式: {config.get_download_mode()}")
-        print(f"定时任务: {'启用' if config.is_schedule_enabled() else '禁用'}")
         print(f"配置完整: {'是' if config.validate_required() else '否'}")
         print(f"数据库: {db_path} ({'存在' if Path(db_path).exists() else '不存在'})")
         if runtime:
@@ -323,7 +353,7 @@ def main():
         cooldown_error_minutes = service.config.get_cooldown_after_error_minutes()
 
         while True:
-            result = service.run()
+            result = service.run(max_download_limit=service.config.get_max_downloads())
             now = datetime.now()
 
             if result.get("rate_limited"):
@@ -345,10 +375,12 @@ def main():
                 "cooldown_seconds": wait_seconds,
             })
             service.logger.info(f"进入冷却({reason})，下次巡检时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
-            time.sleep(wait_seconds)
+            service.wait_with_force_run(wait_seconds)
     else:
         # 单次运行模式
-        result = service.run()
+        if args.count is None or args.count <= 0:
+            parser.error("run 模式必须指定单次下载数量，例如: pixiv-backup run 20")
+        result = service.run(max_download_limit=args.count)
         sys.exit(0 if result.get("success") else 1)
 
 if __name__ == "__main__":

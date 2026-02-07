@@ -79,16 +79,9 @@ function action_status()
         end
     end
 
-    -- 最近错误日志（最多5行）
-    local latest_log = sys.exec("ls -t '" .. output_dir .. "/data/logs/'pixiv-backup-*.log 2>/dev/null | head -n 1")
-    latest_log = latest_log and latest_log:gsub("%s+$", "")
-    if latest_log and latest_log ~= "" and fs.access(latest_log) then
-        local err_lines = sys.exec("grep -E 'ERROR|Traceback|Exception|429|403|502|503|504|rate limit|too many requests' '" .. latest_log .. "' 2>/dev/null | tail -n 5")
-        if err_lines and err_lines ~= "" then
-            for line in err_lines:gmatch("[^\r\n]+") do
-                table.insert(result.recent_errors, line)
-            end
-        end
+    -- 最近错误（结构化）
+    if result.runtime and result.runtime.last_error and result.runtime.last_error ~= "" then
+        table.insert(result.recent_errors, result.runtime.last_error)
     end
     
     http.prepare_content("application/json")
@@ -115,12 +108,17 @@ function action_logs()
 end
 
 function action_start()
+    local uci = require("luci.model.uci").cursor()
     local sys = require("luci.sys")
     local http = require("luci.http")
-    
-    local result = sys.exec("/etc/init.d/pixiv-backup restart 2>&1")
+
+    local main = uci:get_all("pixiv-backup", "settings")
+    local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
+    sys.exec("mkdir -p '" .. output_dir .. "/data'")
+    sys.exec("touch '" .. output_dir .. "/data/force_run.flag'")
+    local result = sys.exec("/etc/init.d/pixiv-backup start 2>&1")
     http.prepare_content("text/plain; charset=utf-8")
-    http.write(result or "服务启动命令已执行")
+    http.write(result or "已请求立即开始备份")
 end
 
 function action_stop()

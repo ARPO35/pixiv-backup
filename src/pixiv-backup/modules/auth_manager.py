@@ -36,12 +36,6 @@ class AuthManager:
         # 创建API客户端
         self.api_client = AppPixivAPI()
         
-        # 配置代理（如果启用）
-        if self.config.is_proxy_enabled():
-            proxy_url = self.config.get_proxy_url()
-            if proxy_url:
-                self.api_client.set_proxy(proxy_url)
-                
         # 设置超时
         timeout = self.config.get_timeout()
         self.api_client.timeout = timeout

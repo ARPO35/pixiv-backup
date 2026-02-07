@@ -53,42 +53,9 @@ max_downloads = s:option(Value, "max_downloads", "最大下载数量", "单次�
 max_downloads.default = "1000"
 max_downloads.datatype = "uinteger"
 
--- 过滤设置
-min_bookmarks = s:option(Value, "min_bookmarks", "最小收藏数", "只下载收藏数超过此值的作品")
-min_bookmarks.default = "0"
-min_bookmarks.datatype = "uinteger"
-
-r18_mode = s:option(ListValue, "r18_mode", "R18内容处理", "选择如何处理R18内容")
-r18_mode:value("skip", "跳过R18内容")
-r18_mode:value("only", "仅下载R18内容")
-r18_mode:value("both", "下载所有内容")
-r18_mode.default = "skip"
-
-include_tags = s:option(Value, "include_tags", "包含标签", "只下载包含这些标签的作品（逗号分隔）")
-include_tags.placeholder = "tag1,tag2,tag3"
-
-exclude_tags = s:option(Value, "exclude_tags", "排除标签", "跳过包含这些标签的作品（逗号分隔）")
-exclude_tags.placeholder = "tag1,tag2,tag3"
-
--- 网络设置
-proxy_enabled = s:option(Flag, "proxy_enabled", "启用代理", "使用代理服务器访问Pixiv")
-proxy_enabled.default = "0"
-
-proxy_url = s:option(Value, "proxy_url", "代理地址", "代理服务器地址")
-proxy_url.placeholder = "http://127.0.0.1:7890"
-proxy_url:depends("proxy_enabled", "1")
-
 timeout = s:option(Value, "timeout", "请求超时", "网络请求超时时间（秒）")
 timeout.default = "30"
 timeout.datatype = "uinteger"
-
--- 计划任务
-schedule_enabled = s:option(Flag, "schedule_enabled", "启用定时任务", "定时自动运行备份")
-schedule_enabled.default = "0"
-
-schedule_time = s:option(Value, "schedule_time", "运行时间", "每天运行的时间（24小时制）")
-schedule_time.default = "03:00"
-schedule_time.placeholder = "HH:MM"
 
 sync_interval_minutes = s:option(Value, "sync_interval_minutes", "巡检间隔（分钟）", "守护进程每隔多少分钟检查一次新作品")
 sync_interval_minutes.default = "360"
@@ -169,24 +136,22 @@ end
 local runtime_errors = status_section:option(DummyValue, "_runtime_errors", "最近错误")
 runtime_errors.rawhtml = true
 runtime_errors.cfgvalue = function(self, section)
-    local output_dir = uci:get("pixiv-backup", "settings", "output_dir") or "/mnt/sda1/pixiv-backup"
-    local latest_log = sys.exec("ls -t '" .. output_dir .. "/data/logs/'pixiv-backup-*.log 2>/dev/null | head -n 1")
-    latest_log = latest_log and latest_log:gsub("%s+$", "")
-    if not latest_log or latest_log == "" then
-        return "<pre>暂无错误日志</pre>"
+    local data = read_runtime_status()
+    local err = data.last_error
+    if not err or err == "" then
+        return "<pre>无</pre>"
     end
-    local err_lines = sys.exec("grep -E 'ERROR|Traceback|Exception|429|403|502|503|504|rate limit|too many requests' '" .. latest_log .. "' 2>/dev/null | tail -n 5")
-    if not err_lines or err_lines == "" then
-        return "<pre>暂无错误日志</pre>"
-    end
-    return "<pre>" .. util.pcdata(err_lines) .. "</pre>"
+    return "<pre>" .. util.pcdata(err) .. "</pre>"
 end
 
-local start_btn = status_section:option(Button, "_start", "手动备份")
-start_btn.inputtitle = "立即开始备份"
+local start_btn = status_section:option(Button, "_start", "立即开始备份")
+start_btn.inputtitle = "跳过冷却并立即扫描"
 start_btn.inputstyle = "apply"
 start_btn.write = function(self, section)
-    sys.exec("/etc/init.d/pixiv-backup restart >/tmp/pixiv-backup-start.log 2>&1")
+    local output_dir = uci:get("pixiv-backup", "settings", "output_dir") or "/mnt/sda1/pixiv-backup"
+    sys.exec("mkdir -p '" .. output_dir .. "/data'")
+    sys.exec("touch '" .. output_dir .. "/data/force_run.flag'")
+    sys.exec("/etc/init.d/pixiv-backup start >/tmp/pixiv-backup-start.log 2>&1")
 end
 
 local stop_btn = status_section:option(Button, "_stop", "停止服务")

@@ -2,7 +2,6 @@ import os
 import json
 import subprocess
 from pathlib import Path
-from datetime import datetime, time as dt_time, timedelta
 
 class ConfigManager:
     def __init__(self, config_file="/etc/config/pixiv-backup"):
@@ -121,53 +120,12 @@ class ConfigManager:
         except:
             return 1000
             
-    def get_r18_mode(self):
-        """获取R18处理模式"""
-        return self.get(self.main_section, "r18_mode", "skip")
-        
-    def get_min_bookmarks(self):
-        """获取最小收藏数"""
-        try:
-            return int(self.get(self.main_section, "min_bookmarks", "0"))
-        except:
-            return 0
-            
-    def get_include_tags(self):
-        """获取包含标签"""
-        tags_str = self.get(self.main_section, "include_tags", "")
-        if tags_str:
-            return [tag.strip() for tag in tags_str.split(',')]
-        return []
-        
-    def get_exclude_tags(self):
-        """获取排除标签"""
-        tags_str = self.get(self.main_section, "exclude_tags", "")
-        if tags_str:
-            return [tag.strip() for tag in tags_str.split(',')]
-        return []
-        
-    def is_proxy_enabled(self):
-        """是否启用代理"""
-        return self.get(self.main_section, "proxy_enabled", "0") == "1"
-        
-    def get_proxy_url(self):
-        """获取代理URL"""
-        return self.get(self.main_section, "proxy_url")
-        
     def get_timeout(self):
         """获取超时时间"""
         try:
             return int(self.get(self.main_section, "timeout", "30"))
         except:
             return 30
-            
-    def is_schedule_enabled(self):
-        """是否启用定时任务"""
-        return self.get(self.main_section, "schedule_enabled", "0") == "1"
-        
-    def get_schedule_time(self):
-        """获取定时任务时间"""
-        return self.get(self.main_section, "schedule_time", "03:00")
 
     def get_sync_interval_minutes(self):
         """获取巡检间隔（分钟）"""
@@ -209,33 +167,6 @@ class ConfigManager:
         except:
             return 1.5
         
-    def get_next_schedule_time(self):
-        """计算下一次运行时间"""
-        if not self.is_schedule_enabled():
-            return None
-            
-        schedule_time_str = self.get_schedule_time()
-        try:
-            # 解析时间字符串 "HH:MM"
-            hour, minute = map(int, schedule_time_str.split(':'))
-            schedule_time = dt_time(hour, minute)
-            
-            now = datetime.now()
-            next_run = datetime.combine(now.date(), schedule_time)
-            
-            # 如果今天的时间已经过了，安排到明天
-            if next_run < now:
-                next_run = datetime.combine(
-                    now.date() + timedelta(days=1),
-                    schedule_time
-                )
-                
-            return next_run
-            
-        except Exception as e:
-            print(f"解析定时时间错误: {e}")
-            return None
-            
     def get_image_dir(self):
         """获取图片目录"""
         return self.get_output_dir() / "img"
@@ -261,35 +192,5 @@ class ConfigManager:
         return self.get_data_dir() / "logs"
         
     def should_download_illust(self, illust_info):
-        """判断是否应该下载作品"""
-        # 检查R18模式
-        r18_mode = self.get_r18_mode()
-        x_restrict = illust_info.get("x_restrict", 0)
-        
-        if r18_mode == "skip" and x_restrict > 0:
-            return False, "跳过R18内容"
-        elif r18_mode == "only" and x_restrict == 0:
-            return False, "只下载R18内容"
-            
-        # 检查最小收藏数
-        min_bookmarks = self.get_min_bookmarks()
-        bookmark_count = illust_info.get("bookmark_count", 0)
-        if min_bookmarks > 0 and bookmark_count < min_bookmarks:
-            return False, f"收藏数不足 {min_bookmarks}（当前: {bookmark_count}）"
-            
-        # 检查标签过滤
-        tags = illust_info.get("tags", [])
-        
-        include_tags = self.get_include_tags()
-        if include_tags:
-            has_include_tag = any(tag in include_tags for tag in tags)
-            if not has_include_tag:
-                return False, f"不包含指定标签: {include_tags}"
-                
-        exclude_tags = self.get_exclude_tags()
-        if exclude_tags:
-            has_exclude_tag = any(tag in exclude_tags for tag in tags)
-            if has_exclude_tag:
-                return False, f"包含排除标签: {exclude_tags}"
-                
-        return True, "通过过滤"
+        """当前版本不启用内容过滤"""
+        return True, "通过"

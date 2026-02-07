@@ -176,6 +176,8 @@ class PixivCrawler:
 
                 if stats.get("rate_limited"):
                     break
+                if stats.get("hit_max_downloads"):
+                    break
                     
                 # 检查是否有下一页
                 next_url = page_result.get("next_url")
