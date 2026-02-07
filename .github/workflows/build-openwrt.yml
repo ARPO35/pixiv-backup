@@ -72,7 +72,7 @@ jobs:
       - name: 复制包到 SDK
         run: |
           mkdir -p openwrt-sdk/package/${{ env.PACKAGE_NAME }}
-          cp -r Makefile src openwrt-sdk/package/${{ env.PACKAGE_NAME }}/
+          cp -r Makefile src docs openwrt-sdk/package/${{ env.PACKAGE_NAME }}/
           
           # 显示复制的文件
           echo "=== 包文件结构 ==="

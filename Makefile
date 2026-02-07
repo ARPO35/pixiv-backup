@@ -39,6 +39,8 @@ endef
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
 	$(CP) ./src/* $(PKG_BUILD_DIR)/
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/docs
+	$(CP) ./docs/*.md $(PKG_BUILD_DIR)/docs/
 endef
 
 define Build/Configure
@@ -69,6 +71,9 @@ define Package/pixiv-backup/install
 	
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/hotplug/99-pixiv-backup $(1)/etc/hotplug.d/iface/99-pixiv-backup
+
+	$(INSTALL_DIR) $(1)/usr/share/doc/pixiv-backup
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/docs/refresh-token.md $(1)/usr/share/doc/pixiv-backup/refresh-token.md
 endef
 
 # LuCI界面安装

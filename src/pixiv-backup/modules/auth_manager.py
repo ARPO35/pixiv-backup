@@ -160,33 +160,23 @@ class AuthManager:
         help_info = """
         # 如何获取Pixiv Refresh Token
         
-        ## 方法一：使用get-pixivpy-token工具（推荐）
+        请优先查看项目文档：
+        docs/refresh-token.md
+        
+        ## 常用方法：使用 gppt 工具
         
         1. 安装工具：
            ```bash
-           pip install get-pixivpy-token
+           pip install gppt
            ```
            
         2. 运行工具获取token：
            ```bash
-           gppt
+           gppt login
            ```
            
         3. 按照提示登录Pixiv账号
         4. 工具会显示refresh_token，复制它
-        
-        ## 方法二：手动获取（复杂）
-        
-        1. 在浏览器中登录Pixiv
-        2. 打开开发者工具（F12）
-        3. 访问：https://www.pixiv.net/
-        4. 在Network标签中查找包含"access_token"的请求
-        5. 提取refresh_token参数
-        
-        ## 方法三：使用浏览器插件
-        
-        1. 安装"Pixiv Token Getter"等浏览器插件
-        2. 登录Pixiv后，插件会自动显示token
         
         ## 重要提示
         

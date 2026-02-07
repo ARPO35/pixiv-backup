@@ -28,7 +28,7 @@
 
 ## 配置要点
 - Pixiv 用户 ID
-- OAuth refresh token（通过 `src/pixiv-backup/tools/token_helper.py` 获取）
+- OAuth refresh token（获取方式见 `docs/refresh-token.md`）
 - 输出目录（默认 `/mnt/sda1/pixiv-backup`）
 
 ## 允许的操作

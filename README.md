@@ -82,26 +82,7 @@ opkg install bin/packages/*/luci-app-pixiv-backup*.ipk
 
 ### 1. 获取Pixiv Refresh Token
 
-#### 方法一：使用get-pixivpy-token工具（推荐）
-
-```bash
-# 在电脑上安装工具
-pip install get-pixivpy-token
-
-# 运行工具
-gppt
-
-# 按照提示登录，工具会显示refresh_token
-```
-
-#### 方法二：手动获取
-
-1. 在浏览器中登录 https://www.pixiv.net/
-2. 按F12打开开发者工具
-3. 切换到Network（网络）标签
-4. 刷新页面
-5. 查找包含 "access_token" 的请求
-6. 在请求参数或响应中找到refresh_token
+请参考文档：[`docs/refresh-token.md`](docs/refresh-token.md)
 
 ### 2. LuCI界面配置
 
@@ -206,9 +187,9 @@ pixiv-backup
 pixiv-backup --daemon
 ```
 
-### Token获取助手
+### Refresh Token 获取说明
 ```bash
-python3 /usr/share/pixiv-backup/tools/token_helper.py
+cat /usr/share/doc/pixiv-backup/refresh-token.md
 ```
 
 ## 故障排除
@@ -264,7 +245,7 @@ pixiv-backup/
 │   ├── pixiv-backup/          # Python主程序
 │   │   ├── main.py
 │   │   ├── modules/           # 核心模块
-│   │   ├── tools/             # 工具脚本
+│   │   ├── tools/             # 辅助模块
 │   │   └── requirements.txt   # Python依赖
 │   ├── init.d/               # init脚本
 │   └── config/               # 配置文件模板
