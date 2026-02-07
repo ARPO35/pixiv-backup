@@ -7,12 +7,13 @@ logger -t pixiv-backup "网络连接恢复，检查服务状态"
 
 # 检查服务是否应该运行
 if [ -f /etc/config/pixiv-backup ]; then
-    enabled=$(uci -q get pixiv-backup.main.enabled)
+    enabled=$(uci -q get pixiv-backup.settings.enabled)
+    [ -n "$enabled" ] || enabled=$(uci -q get pixiv-backup.main.enabled)
     if [ "$enabled" = "1" ]; then
         # 检查服务是否在运行
         if ! pgrep -f "pixiv-backup" > /dev/null; then
             logger -t pixiv-backup "启动备份服务"
-            /etc/init.d/pixiv-backup start
+            pixiv-backup start
         else
             logger -t pixiv-backup "服务已在运行"
         fi
