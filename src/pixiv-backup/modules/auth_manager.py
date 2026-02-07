@@ -163,7 +163,7 @@ class AuthManager:
         请优先查看项目文档：
         docs/refresh-token.md
         
-        ## 常用方法：使用 gppt 工具
+        ## 方案A：gppt（推荐）
         
         1. 安装工具：
            ```bash
@@ -177,6 +177,19 @@ class AuthManager:
            
         3. 按照提示登录Pixiv账号
         4. 工具会显示refresh_token，复制它
+
+        ## 方案B：F12 + pixiv_auth.py（兜底）
+
+        1. 下载脚本：
+           ```bash
+           curl -L -o pixiv_auth.py https://raw.githubusercontent.com/upbit/pixivpy/master/pixiv_auth.py
+           ```
+        2. 运行：
+           ```bash
+           python pixiv_auth.py login
+           ```
+        3. 在浏览器开发者工具 Network 中抓取 callback URL 的 code 参数
+        4. 粘贴 code 后换取 refresh_token
         
         ## 重要提示
         

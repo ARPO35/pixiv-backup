@@ -9,7 +9,9 @@ class ConfigManager:
         """初始化配置管理器"""
         self.config_file = config_file
         self.config_data = {}
+        self.main_section = "settings"
         self._load_config()
+        self.main_section = self._detect_main_section()
         
     def _load_config(self):
         """加载UCI配置"""
@@ -49,19 +51,32 @@ class ConfigManager:
             print(f"无法读取配置: {e}")
         except Exception as e:
             print(f"配置解析错误: {e}")
+
+    def _detect_main_section(self):
+        """检测主配置节名，兼容旧版 main 和新版 settings"""
+        if "settings" in self.config_data:
+            return "settings"
+        if "main" in self.config_data:
+            return "main"
+        return "settings"
             
     def get(self, section, option, default=None):
         """获取配置值"""
         if section in self.config_data and option in self.config_data[section]:
             return self.config_data[section][option]
+        # 兼容主配置节重命名：main <-> settings
+        if section in ("main", "settings"):
+            compat_section = self.main_section
+            if compat_section in self.config_data and option in self.config_data[compat_section]:
+                return self.config_data[compat_section][option]
         return default
         
     def validate_required(self):
         """验证必要配置"""
         required_configs = [
-            ("main", "user_id"),
-            ("main", "refresh_token"),
-            ("main", "output_dir")
+            (self.main_section, "user_id"),
+            (self.main_section, "refresh_token"),
+            (self.main_section, "output_dir")
         ]
         
         missing = []
@@ -78,81 +93,81 @@ class ConfigManager:
         
     def get_user_id(self):
         """获取用户ID"""
-        return self.get("main", "user_id")
+        return self.get(self.main_section, "user_id")
         
     def get_refresh_token(self):
         """获取refresh token"""
-        return self.get("main", "refresh_token")
+        return self.get(self.main_section, "refresh_token")
         
     def get_output_dir(self):
         """获取输出目录"""
-        dir_path = self.get("main", "output_dir")
+        dir_path = self.get(self.main_section, "output_dir")
         if not dir_path:
             dir_path = "/mnt/sda1/pixiv-backup"
         return Path(str(dir_path))
         
     def get_download_mode(self):
         """获取下载模式"""
-        return self.get("main", "mode", "bookmarks")
+        return self.get(self.main_section, "mode", "bookmarks")
         
     def get_restrict_mode(self):
         """获取内容范围"""
-        return self.get("main", "restrict", "public")
+        return self.get(self.main_section, "restrict", "public")
         
     def get_max_downloads(self):
         """获取最大下载数量"""
         try:
-            return int(self.get("main", "max_downloads", "1000"))
+            return int(self.get(self.main_section, "max_downloads", "1000"))
         except:
             return 1000
             
     def get_r18_mode(self):
         """获取R18处理模式"""
-        return self.get("main", "r18_mode", "skip")
+        return self.get(self.main_section, "r18_mode", "skip")
         
     def get_min_bookmarks(self):
         """获取最小收藏数"""
         try:
-            return int(self.get("main", "min_bookmarks", "0"))
+            return int(self.get(self.main_section, "min_bookmarks", "0"))
         except:
             return 0
             
     def get_include_tags(self):
         """获取包含标签"""
-        tags_str = self.get("main", "include_tags", "")
+        tags_str = self.get(self.main_section, "include_tags", "")
         if tags_str:
             return [tag.strip() for tag in tags_str.split(',')]
         return []
         
     def get_exclude_tags(self):
         """获取排除标签"""
-        tags_str = self.get("main", "exclude_tags", "")
+        tags_str = self.get(self.main_section, "exclude_tags", "")
         if tags_str:
             return [tag.strip() for tag in tags_str.split(',')]
         return []
         
     def is_proxy_enabled(self):
         """是否启用代理"""
-        return self.get("main", "proxy_enabled", "0") == "1"
+        return self.get(self.main_section, "proxy_enabled", "0") == "1"
         
     def get_proxy_url(self):
         """获取代理URL"""
-        return self.get("main", "proxy_url")
+        return self.get(self.main_section, "proxy_url")
         
     def get_timeout(self):
         """获取超时时间"""
         try:
-            return int(self.get("main", "timeout", "30"))
+            return int(self.get(self.main_section, "timeout", "30"))
         except:
             return 30
             
     def is_schedule_enabled(self):
         """是否启用定时任务"""
-        return self.get("main", "schedule_enabled", "0") == "1"
+        return self.get(self.main_section, "schedule_enabled", "0") == "1"
         
     def get_schedule_time(self):
         """获取定时任务时间"""
-        return self.get("main", "schedule_time", "03:00")
+        return self.get(self.main_section, "schedule_time", "03:00")
         
     def get_next_schedule_time(self):
         """计算下一次运行时间"""
