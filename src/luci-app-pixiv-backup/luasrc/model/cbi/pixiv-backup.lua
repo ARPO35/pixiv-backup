@@ -1,6 +1,8 @@
 local fs = require("nixio.fs")
 local sys = require("luci.sys")
 local uci = require("luci.model.uci").cursor()
+local jsonc = require("luci.jsonc")
+local util = require("luci.util")
 
 -- Ensure the named section exists to avoid nsection.htm errors
 if not uci:get("pixiv-backup", "settings") then
@@ -80,10 +82,44 @@ schedule_time = s:option(Value, "schedule_time", "运行时间", "每天运行�
 schedule_time.default = "03:00"
 schedule_time.placeholder = "HH:MM"
 
+sync_interval_minutes = s:option(Value, "sync_interval_minutes", "巡检间隔（分钟）", "守护进程每隔多少分钟检查一次新作品")
+sync_interval_minutes.default = "360"
+sync_interval_minutes.datatype = "uinteger"
+
+cooldown_after_limit_minutes = s:option(Value, "cooldown_after_limit_minutes", "达到下载上限冷却（分钟）", "单次同步达到最大下载数量后进入冷却")
+cooldown_after_limit_minutes.default = "60"
+cooldown_after_limit_minutes.datatype = "uinteger"
+
+cooldown_after_error_minutes = s:option(Value, "cooldown_after_error_minutes", "限速/错误冷却（分钟）", "遇到 403/429/502 等限速错误后进入冷却")
+cooldown_after_error_minutes.default = "180"
+cooldown_after_error_minutes.datatype = "uinteger"
+
+high_speed_queue_size = s:option(Value, "high_speed_queue_size", "高速队列数量", "每轮同步开始时优先快速处理的任务数量")
+high_speed_queue_size.default = "20"
+high_speed_queue_size.datatype = "uinteger"
+
+low_speed_interval_seconds = s:option(Value, "low_speed_interval_seconds", "低速队列间隔（秒）", "超过高速队列后，每个任务之间的等待时间")
+low_speed_interval_seconds.default = "1.5"
+low_speed_interval_seconds.datatype = "float"
+
 -- 状态和操作部分
 status_section = m:section(TypedSection, "_dummy", "服务状态")
 status_section.anonymous = true
 status_section.template = "cbi/nullsection"
+
+local function read_runtime_status()
+    local output_dir = uci:get("pixiv-backup", "settings", "output_dir") or "/mnt/sda1/pixiv-backup"
+    local status_file = output_dir .. "/data/status.json"
+    if not fs.access(status_file) then
+        return {}
+    end
+    local content = fs.readfile(status_file)
+    if not content or content == "" then
+        return {}
+    end
+    local parsed = jsonc.parse(content)
+    return parsed or {}
+end
 
 local service_status = status_section:option(DummyValue, "_status", "服务状态")
 service_status.rawhtml = true
@@ -94,6 +130,49 @@ service_status.cfgvalue = function(self, section)
     else
         return '<span style="color: red; font-weight: bold;">● 已停止</span>'
     end
+end
+
+local runtime_state = status_section:option(DummyValue, "_runtime_state", "当前任务状态")
+runtime_state.cfgvalue = function(self, section)
+    local data = read_runtime_status()
+    return data.state or "unknown"
+end
+
+local runtime_progress = status_section:option(DummyValue, "_runtime_progress", "本轮进度")
+runtime_progress.cfgvalue = function(self, section)
+    local data = read_runtime_status()
+    local total = tonumber(data.processed_total or 0) or 0
+    local success = tonumber(data.success or 0) or 0
+    local skipped = tonumber(data.skipped or 0) or 0
+    local failed = tonumber(data.failed or 0) or 0
+    return string.format("已处理: %d, 成功: %d, 跳过: %d, 失败: %d", total, success, skipped, failed)
+end
+
+local runtime_cooldown = status_section:option(DummyValue, "_runtime_cooldown", "冷却信息")
+runtime_cooldown.cfgvalue = function(self, section)
+    local data = read_runtime_status()
+    if data.state == "cooldown" then
+        local reason = data.cooldown_reason or "unknown"
+        local next_run_at = data.next_run_at or "-"
+        return string.format("原因: %s, 下次巡检: %s", reason, next_run_at)
+    end
+    return "无"
+end
+
+local runtime_errors = status_section:option(DummyValue, "_runtime_errors", "最近错误")
+runtime_errors.rawhtml = true
+runtime_errors.cfgvalue = function(self, section)
+    local output_dir = uci:get("pixiv-backup", "settings", "output_dir") or "/mnt/sda1/pixiv-backup"
+    local latest_log = sys.exec("ls -t '" .. output_dir .. "/data/logs/'pixiv-backup-*.log 2>/dev/null | head -n 1")
+    latest_log = latest_log and latest_log:gsub("%s+$", "")
+    if not latest_log or latest_log == "" then
+        return "<pre>暂无错误日志</pre>"
+    end
+    local err_lines = sys.exec("grep -E 'ERROR|Traceback|Exception|429|403|502|503|504|rate limit|too many requests' '" .. latest_log .. "' 2>/dev/null | tail -n 5")
+    if not err_lines or err_lines == "" then
+        return "<pre>暂无错误日志</pre>"
+    end
+    return "<pre>" .. util.pcdata(err_lines) .. "</pre>"
 end
 
 local start_btn = status_section:option(Button, "_start", "手动备份")

@@ -19,6 +19,8 @@ function action_status()
         service_status = "stopped",
         config_status = "unconfigured",
         last_run = nil,
+        runtime = {},
+        recent_errors = {},
         stats = {
             total_downloaded = 0,
             last_24h = 0,
@@ -64,6 +66,31 @@ function action_status()
             result.last_run = content:gsub("%s+$", "")
         end
     end
+
+    -- 读取运行时状态
+    local status_file = output_dir .. "/data/status.json"
+    if fs.access(status_file) then
+        local content = fs.readfile(status_file)
+        if content and content ~= "" then
+            local jsonc = require("luci.jsonc")
+            local parsed = jsonc.parse(content)
+            if parsed then
+                result.runtime = parsed
+            end
+        end
+    end
+
+    -- 最近错误日志（最多5行）
+    local latest_log = sys.exec("ls -t '" .. output_dir .. "/data/logs/'pixiv-backup-*.log 2>/dev/null | head -n 1")
+    latest_log = latest_log and latest_log:gsub("%s+$", "")
+    if latest_log and latest_log ~= "" and fs.access(latest_log) then
+        local err_lines = sys.exec("grep -E 'ERROR|Traceback|Exception|429|403|502|503|504|rate limit|too many requests' '" .. latest_log .. "' 2>/dev/null | tail -n 5")
+        if err_lines and err_lines ~= "" then
+            for line in err_lines:gmatch("[^\r\n]+") do
+                table.insert(result.recent_errors, line)
+            end
+        end
+    end
     
     http.prepare_content("application/json")
     http.write_json(result)
@@ -73,18 +100,15 @@ function action_logs()
     local sys = require("luci.sys")
     local http = require("luci.http")
     
-    -- 尝试多个日志位置
-    local log_files = {
-        "/var/log/pixiv-backup.log",
-        "/mnt/sda1/pixiv-backup/data/logs/pixiv-backup.log"
-    }
-    
+    local uci = require("luci.model.uci").cursor()
+    local main = uci:get_all("pixiv-backup", "settings")
+    local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
+    local latest_log = sys.exec("ls -t '" .. output_dir .. "/data/logs/'pixiv-backup-*.log 2>/dev/null | head -n 1")
+    latest_log = latest_log and latest_log:gsub("%s+$", "")
+
     local logs = nil
-    for _, log_file in ipairs(log_files) do
-        if fs.access(log_file) then
-            logs = sys.exec("tail -100 '" .. log_file .. "' 2>/dev/null")
-            break
-        end
+    if latest_log and latest_log ~= "" and fs.access(latest_log) then
+        logs = sys.exec("tail -200 '" .. latest_log .. "' 2>/dev/null")
     end
     
     http.prepare_content("text/plain; charset=utf-8")

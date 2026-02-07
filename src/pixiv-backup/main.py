@@ -11,7 +11,7 @@ import logging
 import sqlite3
 import argparse
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 添加模块搜索路径
 # 支持直接运行和安装后运行
@@ -44,10 +44,19 @@ class PixivBackupService:
         self.auth_manager = AuthManager(self.config)
         self.database = DatabaseManager(self.config)
         self.downloader = DownloadManager(self.config)
-        self.crawler = PixivCrawler(self.config, self.auth_manager, self.database, self.downloader)
+        self.crawler = PixivCrawler(self.config, self.auth_manager, self.database, self.downloader, self._on_progress)
         
         # 创建目录结构
         self._create_directories()
+        self._write_runtime_status({
+            "state": "idle",
+            "phase": "init",
+            "message": "服务已初始化",
+            "processed_total": 0,
+            "success": 0,
+            "skipped": 0,
+            "failed": 0
+        })
         
     def _setup_logging(self):
         """设置日志系统"""
@@ -82,10 +91,55 @@ class PixivBackupService:
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
             self.logger.info(f"创建目录: {directory}")
+
+    def _status_file(self):
+        return Path(self.config.get_output_dir()) / "data" / "status.json"
+
+    def _read_runtime_status(self):
+        status_file = self._status_file()
+        if not status_file.exists():
+            return {}
+        try:
+            with open(status_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _write_runtime_status(self, patch):
+        current = self._read_runtime_status()
+        current.update(patch)
+        current["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        status_file = self._status_file()
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(status_file, 'w', encoding='utf-8') as f:
+            json.dump(current, f, ensure_ascii=False, indent=2)
+
+    def _on_progress(self, payload):
+        self._write_runtime_status(payload)
+
+    def _merge_stats(self, base, part):
+        for key in ("success", "failed", "skipped", "total"):
+            base[key] = base.get(key, 0) + int(part.get(key, 0) or 0)
+        base["hit_max_downloads"] = base.get("hit_max_downloads", False) or bool(part.get("hit_max_downloads", False))
+        base["rate_limited"] = base.get("rate_limited", False) or bool(part.get("rate_limited", False))
+        if part.get("last_error"):
+            base["last_error"] = part.get("last_error")
+        return base
             
     def run(self):
         """运行备份服务"""
         self.logger.info("开始Pixiv备份服务")
+        self._write_runtime_status({
+            "state": "syncing",
+            "phase": "start",
+            "message": "开始同步",
+            "processed_total": 0,
+            "success": 0,
+            "skipped": 0,
+            "failed": 0,
+            "hit_max_downloads": False,
+            "rate_limited": False
+        })
         
         try:
             # 记录开始时间
@@ -101,18 +155,39 @@ class PixivBackupService:
             # 根据配置运行不同的下载模式
             download_mode = self.config.get_download_mode()
             user_id = self.config.get_user_id()
+            max_per_sync = self.config.get_max_downloads()
+            remaining_downloads = max_per_sync if max_per_sync > 0 else 0
             
-            stats = {}
+            stats = {
+                "success": 0,
+                "failed": 0,
+                "skipped": 0,
+                "total": 0,
+                "hit_max_downloads": False,
+                "rate_limited": False,
+                "last_error": None
+            }
             
             if download_mode in ["bookmarks", "both"]:
                 self.logger.info(f"开始下载用户 {user_id} 的收藏...")
-                bookmark_stats = self.crawler.download_user_bookmarks(user_id)
-                stats.update(bookmark_stats)
+                bookmark_stats = self.crawler.download_user_bookmarks(user_id, remaining_downloads if max_per_sync > 0 else 0)
+                self._merge_stats(stats, bookmark_stats)
+                if max_per_sync > 0:
+                    remaining_downloads = max(0, remaining_downloads - int(bookmark_stats.get("success", 0)))
+                if stats.get("rate_limited"):
+                    self.logger.warning("检测到限速/服务异常，结束本轮同步")
+                elif max_per_sync > 0 and remaining_downloads <= 0:
+                    stats["hit_max_downloads"] = True
+                    self.logger.info("本轮同步达到最大下载数量，结束本轮")
                 
-            if download_mode in ["following", "both"]:
+            if download_mode in ["following", "both"] and not stats.get("rate_limited") and not (max_per_sync > 0 and remaining_downloads <= 0):
                 self.logger.info(f"开始下载用户 {user_id} 的关注用户作品...")
-                following_stats = self.crawler.download_following_illusts(user_id)
-                stats.update(following_stats)
+                following_stats = self.crawler.download_following_illusts(user_id, remaining_downloads if max_per_sync > 0 else 0)
+                self._merge_stats(stats, following_stats)
+                if max_per_sync > 0:
+                    remaining_downloads = max(0, remaining_downloads - int(following_stats.get("success", 0)))
+                    if remaining_downloads <= 0:
+                        stats["hit_max_downloads"] = True
                 
             # 计算运行时间
             elapsed_time = time.time() - start_time
@@ -128,18 +203,44 @@ class PixivBackupService:
             self.logger.info(f"失败: {stats.get('failed', 0)} 个作品")
             self.logger.info(f"总计处理: {stats.get('total', 0)} 个作品")
             self.logger.info("=" * 50)
+            self._write_runtime_status({
+                "state": "idle",
+                "phase": "done",
+                "message": "同步完成",
+                "processed_total": stats.get("total", 0),
+                "success": stats.get("success", 0),
+                "skipped": stats.get("skipped", 0),
+                "failed": stats.get("failed", 0),
+                "hit_max_downloads": stats.get("hit_max_downloads", False),
+                "rate_limited": stats.get("rate_limited", False),
+                "last_error": stats.get("last_error"),
+                "last_run": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
             
             # 保存运行记录
             self._save_run_record(stats, elapsed_time)
             
-            return True
+            return {
+                "success": True,
+                "stats": stats,
+                "hit_max_downloads": stats.get("hit_max_downloads", False),
+                "rate_limited": stats.get("rate_limited", False),
+                "last_error": stats.get("last_error")
+            }
             
         except KeyboardInterrupt:
             self.logger.info("用户中断操作")
-            return False
+            self._write_runtime_status({"state": "idle", "phase": "interrupted", "message": "用户中断"})
+            return {"success": False, "stats": {}, "hit_max_downloads": False, "rate_limited": False, "last_error": "用户中断"}
         except Exception as e:
             self.logger.error(f"备份过程中发生错误: {str(e)}", exc_info=True)
-            return False
+            self._write_runtime_status({
+                "state": "idle",
+                "phase": "error",
+                "message": "同步失败",
+                "last_error": str(e)
+            })
+            return {"success": False, "stats": {}, "hit_max_downloads": False, "rate_limited": False, "last_error": str(e)}
             
     def _save_run_record(self, stats, elapsed_time):
         """保存运行记录"""
@@ -190,6 +291,13 @@ def main():
     if args.command == "status":
         config = ConfigManager()
         db_path = config.get_database_path()
+        status_file = Path(config.get_output_dir()) / "data" / "status.json"
+        runtime = {}
+        if status_file.exists():
+            try:
+                runtime = json.loads(status_file.read_text(encoding="utf-8"))
+            except Exception:
+                runtime = {}
         print("Pixiv Backup 状态")
         print(f"配置节: {config.main_section}")
         print(f"用户ID: {config.get_user_id() or '未设置'}")
@@ -198,32 +306,50 @@ def main():
         print(f"定时任务: {'启用' if config.is_schedule_enabled() else '禁用'}")
         print(f"配置完整: {'是' if config.validate_required() else '否'}")
         print(f"数据库: {db_path} ({'存在' if Path(db_path).exists() else '不存在'})")
+        if runtime:
+            print(f"当前状态: {runtime.get('state', 'unknown')}")
+            print(f"当前阶段: {runtime.get('phase', 'unknown')}")
+            print(f"已处理: {runtime.get('processed_total', 0)}")
+            if runtime.get("last_error"):
+                print(f"最近错误: {runtime.get('last_error')}")
         return
 
     service = PixivBackupService()
 
     if args.daemon:
-        # 守护进程模式
-        while True:
-            service.run()
-            # 检查是否需要定时运行
-            if not service.config.is_schedule_enabled():
-                break
+        # 守护进程模式：固定巡检 + 冷却策略
+        sync_interval_minutes = service.config.get_sync_interval_minutes()
+        cooldown_limit_minutes = service.config.get_cooldown_after_limit_minutes()
+        cooldown_error_minutes = service.config.get_cooldown_after_error_minutes()
 
-            # 计算下一次运行时间
-            next_run = service.config.get_next_schedule_time()
-            if next_run:
-                wait_seconds = (next_run - datetime.now()).total_seconds()
-                if wait_seconds > 0:
-                    service.logger.info(f"等待下次运行: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
-                    time.sleep(wait_seconds)
+        while True:
+            result = service.run()
+            now = datetime.now()
+
+            if result.get("rate_limited"):
+                wait_seconds = cooldown_error_minutes * 60
+                reason = "rate_limit_or_server_error"
+            elif result.get("hit_max_downloads"):
+                wait_seconds = cooldown_limit_minutes * 60
+                reason = "hit_max_downloads"
             else:
-                # 没有定时任务，退出
-                break
+                wait_seconds = sync_interval_minutes * 60
+                reason = "normal_interval"
+
+            next_run = now + timedelta(seconds=wait_seconds)
+            service._write_runtime_status({
+                "state": "cooldown",
+                "phase": "waiting",
+                "cooldown_reason": reason,
+                "next_run_at": next_run.strftime("%Y-%m-%d %H:%M:%S"),
+                "cooldown_seconds": wait_seconds,
+            })
+            service.logger.info(f"进入冷却({reason})，下次巡检时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+            time.sleep(wait_seconds)
     else:
         # 单次运行模式
-        success = service.run()
-        sys.exit(0 if success else 1)
+        result = service.run()
+        sys.exit(0 if result.get("success") else 1)
 
 if __name__ == "__main__":
     main()

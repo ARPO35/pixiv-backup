@@ -3,14 +3,17 @@ import logging
 from typing import Dict, List
 
 class PixivCrawler:
-    def __init__(self, config, auth_manager, database, downloader):
+    def __init__(self, config, auth_manager, database, downloader, progress_callback=None):
         """初始化爬虫"""
         self.config = config
         self.auth_manager = auth_manager
         self.database = database
         self.downloader = downloader
+        self.progress_callback = progress_callback
         self.api = None
         self.logger = logging.getLogger(__name__)
+        self.high_speed_queue_size = self.config.get_high_speed_queue_size()
+        self.low_speed_interval_seconds = self.config.get_low_speed_interval_seconds()
         
     def _get_api(self):
         """获取API客户端"""
@@ -32,21 +35,72 @@ class PixivCrawler:
             for k, v in query_params.items()
             if v and k not in excluded_keys
         }
+
+    def _notify_progress(self, phase, stats, message=None):
+        """上报进度到上层状态管理"""
+        if not self.progress_callback:
+            return
+        payload = {
+            "phase": phase,
+            "processed_total": stats.get("total", 0),
+            "success": stats.get("success", 0),
+            "skipped": stats.get("skipped", 0),
+            "failed": stats.get("failed", 0),
+            "hit_max_downloads": stats.get("hit_max_downloads", False),
+            "rate_limited": stats.get("rate_limited", False),
+            "last_error": stats.get("last_error"),
+        }
+        if message:
+            payload["message"] = message
+        self.progress_callback(payload)
+
+    def _is_rate_limit_error(self, error_msg):
+        """识别是否为限速/服务拥塞类错误"""
+        msg = (error_msg or "").lower()
+        keywords = [
+            "rate limit",
+            "too many requests",
+            "temporarily unavailable",
+            "http 429",
+            "http 403",
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+            "status 429",
+            "status 403",
+            "status 500",
+            "status 502",
+            "status 503",
+            "status 504",
+        ]
+        return any(k in msg for k in keywords)
+
+    def _queue_sleep(self, processed_total):
+        """按高速/低速队列节奏等待"""
+        if self.high_speed_queue_size > 0 and processed_total <= self.high_speed_queue_size:
+            return
+        if self.low_speed_interval_seconds > 0:
+            time.sleep(self.low_speed_interval_seconds)
         
-    def download_user_bookmarks(self, user_id):
+    def download_user_bookmarks(self, user_id, max_downloads_override=None):
         """下载用户收藏"""
         self.logger.info(f"开始下载用户 {user_id} 的收藏...")
         
         api = self._get_api()
         restrict = self.config.get_restrict_mode()
-        max_downloads = self.config.get_max_downloads()
+        max_downloads = self.config.get_max_downloads() if max_downloads_override is None else max_downloads_override
         
         stats = {
             "success": 0,
             "failed": 0,
             "skipped": 0,
-            "total": 0
+            "total": 0,
+            "hit_max_downloads": False,
+            "rate_limited": False,
+            "last_error": None
         }
+        self._notify_progress("bookmarks", stats, "开始同步收藏")
         
         try:
             # 获取收藏列表
@@ -57,6 +111,7 @@ class PixivCrawler:
                 # 限制最大下载数量
                 if max_downloads > 0 and downloaded_count >= max_downloads:
                     self.logger.info(f"达到最大下载数量限制: {max_downloads}")
+                    stats["hit_max_downloads"] = True
                     break
                     
                 # 获取下一页
@@ -100,14 +155,27 @@ class PixivCrawler:
                         stats["skipped"] += 1
                     else:
                         stats["failed"] += 1
+                        err = dl_result.get("error")
+                        if err:
+                            stats["last_error"] = err
+                            if self._is_rate_limit_error(err):
+                                stats["rate_limited"] = True
+                                self._notify_progress("bookmarks", stats, f"检测到限速/服务异常: {err}")
+                                break
+
+                    self._notify_progress("bookmarks", stats)
                         
                     # 限制最大下载数量
                     if max_downloads > 0 and downloaded_count >= max_downloads:
                         self.logger.info(f"达到最大下载数量限制: {max_downloads}")
+                        stats["hit_max_downloads"] = True
                         break
                         
-                    # 延迟防止限制
-                    time.sleep(1.5)
+                    # 高低速队列节奏
+                    self._queue_sleep(stats["total"])
+
+                if stats.get("rate_limited"):
+                    break
                     
                 # 检查是否有下一页
                 next_url = page_result.get("next_url")
@@ -118,24 +186,32 @@ class PixivCrawler:
                 
         except Exception as e:
             self.logger.error(f"下载收藏时发生错误: {str(e)}", exc_info=True)
+            stats["last_error"] = str(e)
+            if self._is_rate_limit_error(str(e)):
+                stats["rate_limited"] = True
             
         self.logger.info(f"收藏下载完成: 成功 {stats['success']}, 跳过 {stats['skipped']}, 失败 {stats['failed']}")
+        self._notify_progress("bookmarks", stats, "收藏同步结束")
         return stats
         
-    def download_following_illusts(self, user_id):
+    def download_following_illusts(self, user_id, max_downloads_override=None):
         """下载关注用户的作品"""
         self.logger.info(f"开始下载用户 {user_id} 的关注用户作品...")
         
         api = self._get_api()
         restrict = self.config.get_restrict_mode()
-        max_downloads = self.config.get_max_downloads()
+        max_downloads = self.config.get_max_downloads() if max_downloads_override is None else max_downloads_override
         
         stats = {
             "success": 0,
             "failed": 0,
             "skipped": 0,
-            "total": 0
+            "total": 0,
+            "hit_max_downloads": False,
+            "rate_limited": False,
+            "last_error": None
         }
+        self._notify_progress("following", stats, "开始同步关注作品")
         
         try:
             # 获取关注用户列表
@@ -190,31 +266,51 @@ class PixivCrawler:
                         continue
                         
                     # 下载作品
-                    result = self._download_illust(illust)
-                    if result["success"]:
+                    dl_result = self._download_illust(illust)
+                    if dl_result["success"]:
                         stats["success"] += 1
                         downloaded_count += 1
-                    elif result.get("skipped", False):
+                    elif dl_result.get("skipped", False):
                         stats["skipped"] += 1
                     else:
                         stats["failed"] += 1
+                        err = dl_result.get("error")
+                        if err:
+                            stats["last_error"] = err
+                            if self._is_rate_limit_error(err):
+                                stats["rate_limited"] = True
+                                self._notify_progress("following", stats, f"检测到限速/服务异常: {err}")
+                                break
+
+                    self._notify_progress("following", stats)
                         
                     # 限制最大下载数量
                     if max_downloads > 0 and downloaded_count >= max_downloads:
                         self.logger.info(f"达到最大下载数量限制: {max_downloads}")
+                        stats["hit_max_downloads"] = True
                         break
                         
-                    # 延迟防止限制
-                    time.sleep(1.5)
+                    # 高低速队列节奏
+                    self._queue_sleep(stats["total"])
+
+                if stats.get("rate_limited"):
+                    break
                     
                 # 检查是否达到限制
                 if max_downloads > 0 and downloaded_count >= max_downloads:
+                    stats["hit_max_downloads"] = True
+                    break
+                if stats.get("rate_limited"):
                     break
                     
         except Exception as e:
             self.logger.error(f"下载关注用户作品时发生错误: {str(e)}", exc_info=True)
+            stats["last_error"] = str(e)
+            if self._is_rate_limit_error(str(e)):
+                stats["rate_limited"] = True
             
         self.logger.info(f"关注用户作品下载完成: 成功 {stats['success']}, 跳过 {stats['skipped']}, 失败 {stats['failed']}")
+        self._notify_progress("following", stats, "关注作品同步结束")
         return stats
         
     def _download_illust(self, illust):

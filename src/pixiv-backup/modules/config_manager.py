@@ -168,6 +168,46 @@ class ConfigManager:
     def get_schedule_time(self):
         """获取定时任务时间"""
         return self.get(self.main_section, "schedule_time", "03:00")
+
+    def get_sync_interval_minutes(self):
+        """获取巡检间隔（分钟）"""
+        try:
+            value = int(self.get(self.main_section, "sync_interval_minutes", "360"))
+            return value if value > 0 else 360
+        except:
+            return 360
+
+    def get_cooldown_after_limit_minutes(self):
+        """获取达到下载上限后的冷却时间（分钟）"""
+        try:
+            value = int(self.get(self.main_section, "cooldown_after_limit_minutes", "60"))
+            return value if value > 0 else 60
+        except:
+            return 60
+
+    def get_cooldown_after_error_minutes(self):
+        """获取限速/错误后的冷却时间（分钟）"""
+        try:
+            value = int(self.get(self.main_section, "cooldown_after_error_minutes", "180"))
+            return value if value > 0 else 180
+        except:
+            return 180
+
+    def get_high_speed_queue_size(self):
+        """获取高速队列数量"""
+        try:
+            value = int(self.get(self.main_section, "high_speed_queue_size", "20"))
+            return value if value >= 0 else 20
+        except:
+            return 20
+
+    def get_low_speed_interval_seconds(self):
+        """获取低速队列间隔时间（秒）"""
+        try:
+            value = float(self.get(self.main_section, "low_speed_interval_seconds", "1.5"))
+            return value if value >= 0 else 1.5
+        except:
+            return 1.5
         
     def get_next_schedule_time(self):
         """计算下一次运行时间"""
