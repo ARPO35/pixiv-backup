@@ -123,11 +123,27 @@ class DatabaseManager:
         tags_json = json.dumps([tag.get("name", "") for tag in illust_info.get("tags", [])], ensure_ascii=False)
         
         cursor.execute('''
-            INSERT OR REPLACE INTO illusts 
+            INSERT INTO illusts 
             (illust_id, user_id, title, caption, create_date, page_count, 
              width, height, bookmark_count, view_count, sanity_level, 
              x_restrict, type, image_urls_json, tags_json, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(illust_id) DO UPDATE SET
+                user_id=excluded.user_id,
+                title=excluded.title,
+                caption=excluded.caption,
+                create_date=excluded.create_date,
+                page_count=excluded.page_count,
+                width=excluded.width,
+                height=excluded.height,
+                bookmark_count=excluded.bookmark_count,
+                view_count=excluded.view_count,
+                sanity_level=excluded.sanity_level,
+                x_restrict=excluded.x_restrict,
+                type=excluded.type,
+                image_urls_json=excluded.image_urls_json,
+                tags_json=excluded.tags_json,
+                updated_at=excluded.updated_at
         ''', (
             illust_info["id"],
             illust_info["user"]["id"],

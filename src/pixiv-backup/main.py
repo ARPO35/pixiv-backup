@@ -9,6 +9,7 @@ import json
 import time
 import logging
 import sqlite3
+import argparse
 from pathlib import Path
 from datetime import datetime
 
@@ -181,17 +182,34 @@ class PixivBackupService:
 
 def main():
     """主函数"""
+    parser = argparse.ArgumentParser(description="Pixiv 备份服务")
+    parser.add_argument("command", nargs="?", choices=["run", "status"], default="run")
+    parser.add_argument("--daemon", action="store_true", help="守护进程模式")
+    args = parser.parse_args()
+
+    if args.command == "status":
+        config = ConfigManager()
+        db_path = config.get_database_path()
+        print("Pixiv Backup 状态")
+        print(f"配置节: {config.main_section}")
+        print(f"用户ID: {config.get_user_id() or '未设置'}")
+        print(f"输出目录: {config.get_output_dir()}")
+        print(f"下载模式: {config.get_download_mode()}")
+        print(f"定时任务: {'启用' if config.is_schedule_enabled() else '禁用'}")
+        print(f"配置完整: {'是' if config.validate_required() else '否'}")
+        print(f"数据库: {db_path} ({'存在' if Path(db_path).exists() else '不存在'})")
+        return
+
     service = PixivBackupService()
-    
-    # 检查是否以服务模式运行
-    if len(sys.argv) > 1 and sys.argv[1] == "--daemon":
+
+    if args.daemon:
         # 守护进程模式
         while True:
             service.run()
             # 检查是否需要定时运行
             if not service.config.is_schedule_enabled():
                 break
-                
+
             # 计算下一次运行时间
             next_run = service.config.get_next_schedule_time()
             if next_run:
