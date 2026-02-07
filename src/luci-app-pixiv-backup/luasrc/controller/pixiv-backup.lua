@@ -150,9 +150,7 @@ function action_start()
 
     local main = uci:get_all("pixiv-backup", "settings")
     local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
-    sys.exec("mkdir -p '" .. output_dir .. "/data'")
-    sys.exec("touch '" .. output_dir .. "/data/force_run.flag'")
-    local rc = sys.call("/etc/init.d/pixiv-backup start >/tmp/pixiv-backup-start.log 2>&1")
+    local rc = sys.call("pixiv-backup start --force-run >/tmp/pixiv-backup-start.log 2>&1")
     local result = fs.readfile("/tmp/pixiv-backup-start.log") or ""
     write_luci_audit(output_dir, "controller", "start", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
     http.prepare_content("text/plain; charset=utf-8")
@@ -160,7 +158,7 @@ function action_start()
 end
 
 function action_stop()
-    local rc = sys.call("/etc/init.d/pixiv-backup stop >/tmp/pixiv-backup-stop.log 2>&1")
+    local rc = sys.call("pixiv-backup stop >/tmp/pixiv-backup-stop.log 2>&1")
     local result = fs.readfile("/tmp/pixiv-backup-stop.log") or ""
     local uci = require("luci.model.uci").cursor()
     local main = uci:get_all("pixiv-backup", "settings")
