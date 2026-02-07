@@ -182,6 +182,11 @@ opkg install bin/packages/*/luci-app-pixiv-backup*.ipk
 pixiv-backup
 ```
 
+### 只读查看状态
+```bash
+pixiv-backup status
+```
+
 ### 守护进程模式
 ```bash
 pixiv-backup --daemon
@@ -208,7 +213,7 @@ cat /usr/share/doc/pixiv-backup/refresh-token.md
 
 3. **下载中断**
    - 检查磁盘空间
-   - 查看日志文件 `/var/log/pixiv-backup.log`
+   - 查看日志目录 `/mnt/sda1/pixiv-backup/data/logs/`
    - 可能是Pixiv速率限制，等待一段时间后重试
 
 4. **LuCI界面不显示**
@@ -220,7 +225,7 @@ cat /usr/share/doc/pixiv-backup/refresh-token.md
 
 ```bash
 # 查看实时日志
-tail -f /var/log/pixiv-backup.log
+tail -f /mnt/sda1/pixiv-backup/data/logs/pixiv-backup-*.log
 
 # 查看服务日志
 logread -e pixiv-backup
@@ -261,8 +266,8 @@ pixiv-backup/
 uci show pixiv-backup
 
 # 修改配置
-uci set pixiv-backup.main.user_id='123456'
-uci set pixiv-backup.main.enabled='1'
+uci set pixiv-backup.settings.user_id='123456'
+uci set pixiv-backup.settings.enabled='1'
 uci commit pixiv-backup
 ```
 

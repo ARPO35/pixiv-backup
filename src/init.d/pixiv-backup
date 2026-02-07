@@ -148,8 +148,21 @@ status() {
             echo "PID文件: /var/run/pixiv-backup.pid"
         fi
         
-        # 显示日志文件
-        local log_file="/var/log/pixiv-backup.log"
+        # 显示日志文件（输出目录/data/logs 下最新日志）
+        local log_file
+        log_file=$(/usr/bin/python3 -c "
+import sys
+from pathlib import Path
+sys.path.insert(0, '/usr/share/pixiv-backup')
+from modules.config_manager import ConfigManager
+config = ConfigManager()
+log_dir = config.get_log_dir()
+if not log_dir.exists():
+    print('')
+else:
+    files = sorted(log_dir.glob('pixiv-backup-*.log'), key=lambda p: p.stat().st_mtime, reverse=True)
+    print(files[0] if files else '')
+" 2>/dev/null)
         if [ -f "$log_file" ]; then
             echo "日志文件: $log_file"
             echo "最近日志:"
@@ -171,7 +184,7 @@ try:
     print(f'用户ID: {config.get_user_id() or \"未设置\"}')
     print(f'输出目录: {config.get_output_dir()}')
     print(f'下载模式: {config.get_download_mode()}')
-    print(f'服务启用: {\"是\" if config.get(\"main\", \"enabled\") == \"1\" else \"否\"}')
+    print(f'服务启用: {\"是\" if config.get(config.main_section, \"enabled\") == \"1\" else \"否\"}')
 except Exception as e:
     print(f'读取配置失败: {e}')
     " 2>&1
