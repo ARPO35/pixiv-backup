@@ -2,10 +2,16 @@ local fs = require("nixio.fs")
 local sys = require("luci.sys")
 local uci = require("luci.model.uci").cursor()
 
+-- Ensure the named section exists to avoid nsection.htm errors
+if not uci:get("pixiv-backup", "settings") then
+    uci:section("pixiv-backup", "main", "settings", {})
+    uci:commit("pixiv-backup")
+end
+
 m = Map("pixiv-backup", "Pixiv备份设置", "配置Pixiv收藏和关注列表的自动备份服务")
 
-s = m:section(NamedSection, "settings", "main", "配置", true)
-s.anonymous = true
+s = m:section(NamedSection, "settings", "main", "配置")
+s.anonymous = false
 s.addremove = false
 
 -- 基础设置
