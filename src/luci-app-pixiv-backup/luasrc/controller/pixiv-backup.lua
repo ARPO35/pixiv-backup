@@ -1,6 +1,49 @@
 module("luci.controller.pixiv-backup", package.seeall)
 
 local fs = require("nixio.fs")
+local sys = require("luci.sys")
+local util = require("luci.util")
+local http = require("luci.http")
+
+local function _norm(v)
+    local s = tostring(v or "-")
+    s = s:gsub("[\r\n]", " ")
+    s = s:gsub("%s+", " ")
+    if s == "" then
+        s = "-"
+    end
+    return s
+end
+
+local function write_luci_audit(output_dir, source, action, status, detail)
+    local log_dir = (output_dir or "/mnt/sda1/pixiv-backup") .. "/data/logs"
+    local log_file = log_dir .. "/pixiv-backup-" .. os.date("%Y%m%d") .. ".log"
+    local ip = _norm(http.getenv("REMOTE_ADDR"))
+    local ua = _norm(http.getenv("HTTP_USER_AGENT"))
+    local line = string.format(
+        "%s - pixiv-backup.audit - INFO - event=luci_action source=%s action=%s status=%s ip=%s ua=%s detail=%s\n",
+        os.date("%Y-%m-%d %H:%M:%S"),
+        _norm(source),
+        _norm(action),
+        _norm(status),
+        ip,
+        ua,
+        _norm(detail)
+    )
+
+    fs.mkdirr(log_dir)
+    local f = io.open(log_file, "a")
+    if f then
+        f:write(line)
+        f:close()
+    end
+
+    local syslog_msg = string.format(
+        "event=luci_action source=%s action=%s status=%s ip=%s detail=%s",
+        _norm(source), _norm(action), _norm(status), ip, _norm(detail)
+    )
+    sys.call("logger -t pixiv-backup-audit " .. util.shellquote(syslog_msg))
+end
 
 function index()
     entry({"admin", "services", "pixiv-backup"}, cbi("pixiv-backup"), _("Pixiv备份"), 60).dependent = false
@@ -12,8 +55,6 @@ end
 
 function action_status()
     local uci = require("luci.model.uci").cursor()
-    local sys = require("luci.sys")
-    local http = require("luci.http")
     
     local result = {
         service_status = "stopped",
@@ -89,9 +130,6 @@ function action_status()
 end
 
 function action_logs()
-    local sys = require("luci.sys")
-    local http = require("luci.http")
-    
     local uci = require("luci.model.uci").cursor()
     local main = uci:get_all("pixiv-backup", "settings")
     local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
@@ -109,23 +147,25 @@ end
 
 function action_start()
     local uci = require("luci.model.uci").cursor()
-    local sys = require("luci.sys")
-    local http = require("luci.http")
 
     local main = uci:get_all("pixiv-backup", "settings")
     local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
     sys.exec("mkdir -p '" .. output_dir .. "/data'")
     sys.exec("touch '" .. output_dir .. "/data/force_run.flag'")
-    local result = sys.exec("/etc/init.d/pixiv-backup start 2>&1")
+    local rc = sys.call("/etc/init.d/pixiv-backup start >/tmp/pixiv-backup-start.log 2>&1")
+    local result = fs.readfile("/tmp/pixiv-backup-start.log") or ""
+    write_luci_audit(output_dir, "controller", "start", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
     http.prepare_content("text/plain; charset=utf-8")
-    http.write(result or "已请求立即开始备份")
+    http.write(result ~= "" and result or "已请求立即开始备份")
 end
 
 function action_stop()
-    local sys = require("luci.sys")
-    local http = require("luci.http")
-    
-    local result = sys.exec("/etc/init.d/pixiv-backup stop 2>&1")
+    local rc = sys.call("/etc/init.d/pixiv-backup stop >/tmp/pixiv-backup-stop.log 2>&1")
+    local result = fs.readfile("/tmp/pixiv-backup-stop.log") or ""
+    local uci = require("luci.model.uci").cursor()
+    local main = uci:get_all("pixiv-backup", "settings")
+    local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
+    write_luci_audit(output_dir, "controller", "stop", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
     http.prepare_content("text/plain; charset=utf-8")
-    http.write(result or "服务停止命令已执行")
+    http.write(result ~= "" and result or "服务停止命令已执行")
 end

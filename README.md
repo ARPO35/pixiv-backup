@@ -268,6 +268,9 @@ pixiv-backup log --no-follow -n 50
 # 强制从系统日志读取
 pixiv-backup log --syslog
 
+# 仅查看LuCI操作审计日志（start/stop/配置提交等）
+pixiv-backup log | grep "pixiv-backup.audit"
+
 # 在LuCI界面查看日志
 # 进入"服务" -> "Pixiv备份" -> "日志"
 ```

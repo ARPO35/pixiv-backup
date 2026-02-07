@@ -3,6 +3,48 @@ local sys = require("luci.sys")
 local uci = require("luci.model.uci").cursor()
 local jsonc = require("luci.jsonc")
 local util = require("luci.util")
+local http = require("luci.http")
+
+local function _norm(v)
+    local s = tostring(v or "-")
+    s = s:gsub("[\r\n]", " ")
+    s = s:gsub("%s+", " ")
+    if s == "" then
+        s = "-"
+    end
+    return s
+end
+
+local function write_luci_audit(source, action, status, detail)
+    local output_dir = uci:get("pixiv-backup", "settings", "output_dir") or "/mnt/sda1/pixiv-backup"
+    local log_dir = output_dir .. "/data/logs"
+    local log_file = log_dir .. "/pixiv-backup-" .. os.date("%Y%m%d") .. ".log"
+    local ip = _norm(http.getenv("REMOTE_ADDR"))
+    local ua = _norm(http.getenv("HTTP_USER_AGENT"))
+
+    local line = string.format(
+        "%s - pixiv-backup.audit - INFO - event=luci_action source=%s action=%s status=%s ip=%s ua=%s detail=%s\n",
+        os.date("%Y-%m-%d %H:%M:%S"),
+        _norm(source),
+        _norm(action),
+        _norm(status),
+        ip,
+        ua,
+        _norm(detail)
+    )
+    fs.mkdirr(log_dir)
+    local f = io.open(log_file, "a")
+    if f then
+        f:write(line)
+        f:close()
+    end
+
+    local syslog_msg = string.format(
+        "event=luci_action source=%s action=%s status=%s ip=%s detail=%s",
+        _norm(source), _norm(action), _norm(status), ip, _norm(detail)
+    )
+    sys.call("logger -t pixiv-backup-audit " .. util.shellquote(syslog_msg))
+end
 
 -- Ensure the named section exists to avoid nsection.htm errors
 if not uci:get("pixiv-backup", "settings") then
@@ -14,9 +56,11 @@ m = Map("pixiv-backup", "Pixiv备份设置", "配置Pixiv收藏和关注列表�
 m.on_after_commit = function(self)
     local enabled_value = uci:get("pixiv-backup", "settings", "enabled")
     if enabled_value == "1" then
-        sys.call("/etc/init.d/pixiv-backup enable >/dev/null 2>&1")
+        local rc = sys.call("/etc/init.d/pixiv-backup enable >/dev/null 2>&1")
+        write_luci_audit("cbi", "config_commit_enable", rc == 0 and "ok" or "error", "enabled=1")
     else
-        sys.call("/etc/init.d/pixiv-backup disable >/dev/null 2>&1")
+        local rc = sys.call("/etc/init.d/pixiv-backup disable >/dev/null 2>&1")
+        write_luci_audit("cbi", "config_commit_disable", rc == 0 and "ok" or "error", "enabled=0")
     end
 end
 
@@ -151,14 +195,18 @@ start_btn.write = function(self, section)
     local output_dir = uci:get("pixiv-backup", "settings", "output_dir") or "/mnt/sda1/pixiv-backup"
     sys.exec("mkdir -p '" .. output_dir .. "/data'")
     sys.exec("touch '" .. output_dir .. "/data/force_run.flag'")
-    sys.exec("/etc/init.d/pixiv-backup start >/tmp/pixiv-backup-start.log 2>&1")
+    local rc = sys.call("/etc/init.d/pixiv-backup start >/tmp/pixiv-backup-start.log 2>&1")
+    local result = fs.readfile("/tmp/pixiv-backup-start.log") or ""
+    write_luci_audit("cbi", "start", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
 end
 
 local stop_btn = status_section:option(Button, "_stop", "停止服务")
 stop_btn.inputtitle = "停止备份"
 stop_btn.inputstyle = "reset"
 stop_btn.write = function(self, section)
-    sys.exec("/etc/init.d/pixiv-backup stop >/tmp/pixiv-backup-stop.log 2>&1")
+    local rc = sys.call("/etc/init.d/pixiv-backup stop >/tmp/pixiv-backup-stop.log 2>&1")
+    local result = fs.readfile("/tmp/pixiv-backup-stop.log") or ""
+    write_luci_audit("cbi", "stop", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
 end
 
 return m
