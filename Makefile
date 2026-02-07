@@ -14,7 +14,7 @@ define Package/pixiv-backup
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Pixiv Backup Service for OpenWrt
-  DEPENDS:=+python3 +python3-requests
+  DEPENDS:=+python3 +python3-requests +python3-pip +ca-bundle
   PKGARCH:=all
 endef
 

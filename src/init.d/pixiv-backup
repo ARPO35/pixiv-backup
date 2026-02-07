@@ -6,7 +6,31 @@ STOP=01
 USE_PROCD=1
 PROG=/usr/bin/pixiv-backup
 
+ensure_pixivpy3() {
+    if /usr/bin/python3 -c "import pixivpy3" 2>/dev/null; then
+        return 0
+    fi
+
+    echo "检测到缺少 pixivpy3，尝试自动安装..."
+    if ! command -v pip3 >/dev/null 2>&1; then
+        echo "错误: pip3 不可用，请先安装 python3-pip"
+        return 1
+    fi
+
+    if ! pip3 install --no-cache-dir pixivpy3 >/tmp/pixiv-backup-pip.log 2>&1; then
+        echo "错误: 自动安装 pixivpy3 失败，请检查网络和证书"
+        tail -20 /tmp/pixiv-backup-pip.log 2>/dev/null
+        return 1
+    fi
+
+    /usr/bin/python3 -c "import pixivpy3" 2>/dev/null
+}
+
 start_service() {
+    if ! ensure_pixivpy3; then
+        return 1
+    fi
+
     # 检查配置
     if ! /usr/bin/python3 -c "import sys; sys.path.insert(0, '/usr/share/pixiv-backup'); from modules.config_manager import ConfigManager; c = ConfigManager(); print('Config valid' if c.validate_required() else 'Config invalid')" 2>&1 | grep -q "Config valid"; then
         echo "配置无效，请检查设置"
@@ -51,8 +75,8 @@ test() {
     
     # 检查Python依赖
     echo "检查Python依赖..."
-    if ! /usr/bin/python3 -c "import pixivpy3" 2>/dev/null; then
-        echo "错误: pixivpy3未安装"
+    if ! ensure_pixivpy3; then
+        echo "错误: pixivpy3 不可用"
         return 1
     fi
     

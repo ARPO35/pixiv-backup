@@ -26,7 +26,7 @@ class AuthManager:
         
         # 检查pixivpy是否可用
         if not PIXIVPY_AVAILABLE:
-            raise ImportError("pixivpy3库未安装，请运行: pip install pixivpy3")
+            raise ImportError("pixivpy3库未安装，请先安装 python3-pip 后执行: pip3 install pixivpy3")
             
     def get_api_client(self):
         """获取API客户端"""
