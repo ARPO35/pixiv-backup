@@ -104,11 +104,11 @@ jobs:
       - name: 编译包
         run: |
           cd openwrt-sdk
-          echo "开始编译 ${{ env.PACKAGE_NAME }} 包..."
+          echo "开始编译 pixiv-backup 与 luci-app-pixiv-backup 包..."
           
           # 先尝试多线程编译，失败则单线程
-          make package/${{ env.PACKAGE_NAME }}/compile V=s -j$(nproc) 2>&1 || \
-          make package/${{ env.PACKAGE_NAME }}/compile V=s -j1 2>&1
+          make package/pixiv-backup/compile package/luci-app-pixiv-backup/compile V=s -j$(nproc) 2>&1 || \
+          make package/pixiv-backup/compile package/luci-app-pixiv-backup/compile V=s -j1 2>&1
 
       - name: 查找编译产物
         id: find_ipk
