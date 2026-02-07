@@ -68,21 +68,43 @@ class PixivBackupService:
         
     def _setup_logging(self):
         """设置日志系统"""
-        log_dir = Path(self.config.get_output_dir()) / "data" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        
-        log_file = log_dir / f"pixiv-backup-{datetime.now().strftime('%Y%m%d')}.log"
-        
+        handlers = [logging.StreamHandler(sys.stdout)]
+        fallback_message = None
+
+        primary_log_dir = Path(self.config.get_output_dir()) / "data" / "logs"
+        primary_log_file = primary_log_dir / f"pixiv-backup-{datetime.now().strftime('%Y%m%d')}.log"
+
+        try:
+            primary_log_dir.mkdir(parents=True, exist_ok=True)
+            handlers.insert(0, logging.FileHandler(primary_log_file, encoding='utf-8'))
+        except Exception as primary_error:
+            # 回退到 /tmp，避免因权限问题导致服务直接崩溃
+            tmp_log_dir = Path("/tmp/pixiv-backup")
+            tmp_log_file = tmp_log_dir / f"pixiv-backup-{datetime.now().strftime('%Y%m%d')}.log"
+            try:
+                tmp_log_dir.mkdir(parents=True, exist_ok=True)
+                handlers.insert(0, logging.FileHandler(tmp_log_file, encoding='utf-8'))
+                fallback_message = (
+                    f"主日志文件不可写({primary_log_file}: {primary_error})，"
+                    f"已回退到 {tmp_log_file}"
+                )
+            except Exception as tmp_error:
+                fallback_message = (
+                    f"日志文件不可写({primary_log_file}: {primary_error}; /tmp 回退失败: {tmp_error})，"
+                    "将仅输出到 stdout"
+                )
+
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_file, encoding='utf-8'),
-                logging.StreamHandler(sys.stdout)
-            ]
+            handlers=handlers,
+            force=True,
         )
-        
-        return logging.getLogger(__name__)
+
+        logger = logging.getLogger(__name__)
+        if fallback_message:
+            logger.warning(fallback_message)
+        return logger
         
     def _create_directories(self):
         """创建必要的目录结构"""
@@ -97,8 +119,12 @@ class PixivBackupService:
         ]
         
         for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
-            self.logger.info(f"创建目录: {directory}")
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                self.logger.info(f"创建目录: {directory}")
+            except Exception as e:
+                self.logger.error(f"创建目录失败: {directory} ({e})")
+                raise
 
     def _status_file(self):
         return Path(self.config.get_output_dir()) / "data" / "status.json"
@@ -117,13 +143,16 @@ class PixivBackupService:
             return {}
 
     def _write_runtime_status(self, patch):
-        current = self._read_runtime_status()
-        current.update(patch)
-        current["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        status_file = self._status_file()
-        status_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(status_file, 'w', encoding='utf-8') as f:
-            json.dump(current, f, ensure_ascii=False, indent=2)
+        try:
+            current = self._read_runtime_status()
+            current.update(patch)
+            current["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            status_file = self._status_file()
+            status_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(status_file, 'w', encoding='utf-8') as f:
+                json.dump(current, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.warning(f"写入运行状态失败: {e}")
 
     def _on_progress(self, payload):
         self._write_runtime_status(payload)
