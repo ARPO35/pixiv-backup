@@ -17,6 +17,21 @@ class PixivCrawler:
         if not self.api:
             self.api = self.auth_manager.get_api_client()
         return self.api
+
+    def _next_url_kwargs(self, next_url, excluded_keys=None):
+        """从 next_url 提取分页参数，并过滤掉已显式传入的参数"""
+        if not next_url:
+            return {}
+        if excluded_keys is None:
+            excluded_keys = set()
+        import urllib.parse
+        parsed = urllib.parse.urlparse(next_url)
+        query_params = urllib.parse.parse_qs(parsed.query)
+        return {
+            k: v[0]
+            for k, v in query_params.items()
+            if v and k not in excluded_keys
+        }
         
     def download_user_bookmarks(self, user_id):
         """下载用户收藏"""
@@ -46,29 +61,23 @@ class PixivCrawler:
                     
                 # 获取下一页
                 if next_url:
-                    # 解析next_url参数
-                    import urllib.parse
-                    parsed = urllib.parse.urlparse(next_url)
-                    query_params = urllib.parse.parse_qs(parsed.query)
-                    
-                    # 调用API
-                    result = api.user_bookmarks_illust(
+                    page_result = api.user_bookmarks_illust(
                         user_id=int(user_id),
                         restrict=restrict,
-                        **{k: v[0] for k, v in query_params.items() if v}
+                        **self._next_url_kwargs(next_url, {"user_id", "restrict"})
                     )
                 else:
                     # 第一页
-                    result = api.user_bookmarks_illust(
+                    page_result = api.user_bookmarks_illust(
                         user_id=int(user_id),
                         restrict=restrict
                     )
                     
-                if not result or "illusts" not in result:
+                if not page_result or "illusts" not in page_result:
                     self.logger.warning("没有获取到作品列表")
                     break
                     
-                illusts = result.get("illusts", [])
+                illusts = page_result.get("illusts", [])
                 self.logger.info(f"获取到 {len(illusts)} 个作品")
                 
                 # 处理每个作品
@@ -83,11 +92,11 @@ class PixivCrawler:
                         continue
                         
                     # 下载作品
-                    result = self._download_illust(illust)
-                    if result["success"]:
+                    dl_result = self._download_illust(illust)
+                    if dl_result["success"]:
                         stats["success"] += 1
                         downloaded_count += 1
-                    elif result.get("skipped", False):
+                    elif dl_result.get("skipped", False):
                         stats["skipped"] += 1
                     else:
                         stats["failed"] += 1
@@ -101,7 +110,7 @@ class PixivCrawler:
                     time.sleep(1.5)
                     
                 # 检查是否有下一页
-                next_url = result.get("next_url")
+                next_url = page_result.get("next_url")
                 if not next_url:
                     break
                     
@@ -135,27 +144,22 @@ class PixivCrawler:
             
             while True:
                 if next_url:
-                    # 解析next_url参数
-                    import urllib.parse
-                    parsed = urllib.parse.urlparse(next_url)
-                    query_params = urllib.parse.parse_qs(parsed.query)
-                    
-                    result = api.user_following(
+                    page_result = api.user_following(
                         user_id=int(user_id),
                         restrict=restrict,
-                        **{k: v[0] for k, v in query_params.items() if v}
+                        **self._next_url_kwargs(next_url, {"user_id", "restrict"})
                     )
                 else:
-                    result = api.user_following(
+                    page_result = api.user_following(
                         user_id=int(user_id),
                         restrict=restrict
                     )
                     
-                if result and "user_previews" in result:
-                    for user_preview in result["user_previews"]:
+                if page_result and "user_previews" in page_result:
+                    for user_preview in page_result["user_previews"]:
                         following_users.append(user_preview["user"]["id"])
                         
-                next_url = result.get("next_url")
+                next_url = page_result.get("next_url")
                 if not next_url:
                     break
                     
@@ -164,15 +168,15 @@ class PixivCrawler:
             # 下载每个关注用户的作品
             downloaded_count = 0
             
-            for user_id in following_users:
+            for follow_user_id in following_users:
                 # 获取用户的最新作品
-                result = api.user_illusts(user_id=int(user_id))
+                result = api.user_illusts(user_id=int(follow_user_id))
                 
                 if not result or "illusts" not in result:
                     continue
                     
                 illusts = result.get("illusts", [])
-                self.logger.info(f"用户 {user_id} 有 {len(illusts)} 个作品")
+                self.logger.info(f"用户 {follow_user_id} 有 {len(illusts)} 个作品")
                 
                 # 处理每个作品
                 for illust in illusts:
