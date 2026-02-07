@@ -193,9 +193,7 @@ start_btn.inputtitle = "跳过冷却并立即扫描"
 start_btn.inputstyle = "apply"
 start_btn.write = function(self, section)
     local output_dir = uci:get("pixiv-backup", "settings", "output_dir") or "/mnt/sda1/pixiv-backup"
-    sys.exec("mkdir -p '" .. output_dir .. "/data'")
-    sys.exec("touch '" .. output_dir .. "/data/force_run.flag'")
-    local rc = sys.call("/etc/init.d/pixiv-backup start >/tmp/pixiv-backup-start.log 2>&1")
+    local rc = sys.call("pixiv-backup start --force-run >/tmp/pixiv-backup-start.log 2>&1")
     local result = fs.readfile("/tmp/pixiv-backup-start.log") or ""
     write_luci_audit("cbi", "start", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
 end
@@ -204,7 +202,7 @@ local stop_btn = status_section:option(Button, "_stop", "停止服务")
 stop_btn.inputtitle = "停止备份"
 stop_btn.inputstyle = "reset"
 stop_btn.write = function(self, section)
-    local rc = sys.call("/etc/init.d/pixiv-backup stop >/tmp/pixiv-backup-stop.log 2>&1")
+    local rc = sys.call("pixiv-backup stop >/tmp/pixiv-backup-stop.log 2>&1")
     local result = fs.readfile("/tmp/pixiv-backup-stop.log") or ""
     write_luci_audit("cbi", "stop", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
 end
