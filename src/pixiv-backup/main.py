@@ -10,7 +10,10 @@ import time
 import logging
 import sqlite3
 import argparse
+import shutil
+import subprocess
 from pathlib import Path
+from collections import deque
 from datetime import datetime, timedelta
 
 # 添加模块搜索路径
@@ -28,6 +31,11 @@ from modules.auth_manager import AuthManager
 from modules.crawler import PixivCrawler
 from modules.database import DatabaseManager
 from modules.downloader import DownloadManager
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+LOG_PATTERN = "pixiv-backup-*.log"
 
 class PixivBackupService:
     def __init__(self):
@@ -314,74 +322,261 @@ class PixivBackupService:
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description="Pixiv 备份服务")
-    parser.add_argument("command", nargs="?", choices=["run", "status"], default="run")
-    parser.add_argument("count", nargs="?", type=int, help="run 模式单次下载数量")
-    parser.add_argument("--daemon", action="store_true", help="守护进程模式")
+    parser.add_argument("--daemon", action="store_true", help=argparse.SUPPRESS)
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    run_parser = subparsers.add_parser("run", help="单次运行模式")
+    run_parser.add_argument("count", type=int, help="run 模式单次下载数量")
+
+    subparsers.add_parser("status", help="查看当前状态")
+
+    log_parser = subparsers.add_parser("log", help="查看日志（默认持续追踪）")
+    log_parser.add_argument("-n", "--lines", type=int, default=100, help="先输出最近 N 行日志（默认: 100）")
+    log_parser.add_argument("--no-follow", action="store_true", help="仅输出快照，不持续追踪")
+    log_parser.add_argument("--file", action="store_true", help="强制从文件日志读取")
+    log_parser.add_argument("--syslog", action="store_true", help="强制从系统日志读取")
+
     args = parser.parse_args()
 
-    if args.command == "status":
-        config = ConfigManager()
-        db_path = config.get_database_path()
-        status_file = Path(config.get_output_dir()) / "data" / "status.json"
-        runtime = {}
-        if status_file.exists():
-            try:
-                runtime = json.loads(status_file.read_text(encoding="utf-8"))
-            except Exception:
-                runtime = {}
-        print("Pixiv Backup 状态")
-        print(f"配置节: {config.main_section}")
-        print(f"用户ID: {config.get_user_id() or '未设置'}")
-        print(f"输出目录: {config.get_output_dir()}")
-        print(f"下载模式: {config.get_download_mode()}")
-        print(f"配置完整: {'是' if config.validate_required() else '否'}")
-        print(f"数据库: {db_path} ({'存在' if Path(db_path).exists() else '不存在'})")
-        if runtime:
-            print(f"当前状态: {runtime.get('state', 'unknown')}")
-            print(f"当前阶段: {runtime.get('phase', 'unknown')}")
-            print(f"已处理: {runtime.get('processed_total', 0)}")
-            if runtime.get("last_error"):
-                print(f"最近错误: {runtime.get('last_error')}")
-        return
-
-    service = PixivBackupService()
-
     if args.daemon:
-        # 守护进程模式：固定巡检 + 冷却策略
-        sync_interval_minutes = service.config.get_sync_interval_minutes()
-        cooldown_limit_minutes = service.config.get_cooldown_after_limit_minutes()
-        cooldown_error_minutes = service.config.get_cooldown_after_error_minutes()
+        service = PixivBackupService()
+        _run_daemon_loop(service)
+        return EXIT_OK
 
-        while True:
-            result = service.run(max_download_limit=service.config.get_max_downloads())
-            now = datetime.now()
+    if args.command == "status":
+        _print_status()
+        return EXIT_OK
 
-            if result.get("rate_limited"):
-                wait_seconds = cooldown_error_minutes * 60
-                reason = "rate_limit_or_server_error"
-            elif result.get("hit_max_downloads"):
-                wait_seconds = cooldown_limit_minutes * 60
-                reason = "hit_max_downloads"
-            else:
-                wait_seconds = sync_interval_minutes * 60
-                reason = "normal_interval"
+    if args.command == "log":
+        return handle_log_command(args)
 
-            next_run = now + timedelta(seconds=wait_seconds)
-            service._write_runtime_status({
-                "state": "cooldown",
-                "phase": "waiting",
-                "cooldown_reason": reason,
-                "next_run_at": next_run.strftime("%Y-%m-%d %H:%M:%S"),
-                "cooldown_seconds": wait_seconds,
-            })
-            service.logger.info(f"进入冷却({reason})，下次巡检时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
-            service.wait_with_force_run(wait_seconds)
-    else:
-        # 单次运行模式
-        if args.count is None or args.count <= 0:
-            parser.error("run 模式必须指定单次下载数量，例如: pixiv-backup run 20")
+    if args.command == "run":
+        if args.count <= 0:
+            print("参数错误: run 模式必须指定大于 0 的下载数量，例如: pixiv-backup run 20", file=sys.stderr)
+            return EXIT_USAGE
+        service = PixivBackupService()
         result = service.run(max_download_limit=args.count)
-        sys.exit(0 if result.get("success") else 1)
+        return EXIT_OK if result.get("success") else EXIT_ERROR
+
+    parser.print_help()
+    return EXIT_USAGE
+
+
+def _run_daemon_loop(service):
+    """守护进程模式：固定巡检 + 冷却策略"""
+    sync_interval_minutes = service.config.get_sync_interval_minutes()
+    cooldown_limit_minutes = service.config.get_cooldown_after_limit_minutes()
+    cooldown_error_minutes = service.config.get_cooldown_after_error_minutes()
+
+    while True:
+        result = service.run(max_download_limit=service.config.get_max_downloads())
+        now = datetime.now()
+
+        if result.get("rate_limited"):
+            wait_seconds = cooldown_error_minutes * 60
+            reason = "rate_limit_or_server_error"
+        elif result.get("hit_max_downloads"):
+            wait_seconds = cooldown_limit_minutes * 60
+            reason = "hit_max_downloads"
+        else:
+            wait_seconds = sync_interval_minutes * 60
+            reason = "normal_interval"
+
+        next_run = now + timedelta(seconds=wait_seconds)
+        service._write_runtime_status({
+            "state": "cooldown",
+            "phase": "waiting",
+            "cooldown_reason": reason,
+            "next_run_at": next_run.strftime("%Y-%m-%d %H:%M:%S"),
+            "cooldown_seconds": wait_seconds,
+        })
+        service.logger.info(f"进入冷却({reason})，下次巡检时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+        service.wait_with_force_run(wait_seconds)
+
+
+def _print_status():
+    """只读状态输出"""
+    config = ConfigManager()
+    db_path = config.get_database_path()
+    status_file = Path(config.get_output_dir()) / "data" / "status.json"
+    runtime = {}
+    if status_file.exists():
+        try:
+            runtime = json.loads(status_file.read_text(encoding="utf-8"))
+        except Exception:
+            runtime = {}
+    print("Pixiv Backup 状态")
+    print(f"配置节: {config.main_section}")
+    print(f"用户ID: {config.get_user_id() or '未设置'}")
+    print(f"输出目录: {config.get_output_dir()}")
+    print(f"下载模式: {config.get_download_mode()}")
+    print(f"配置完整: {'是' if config.validate_required() else '否'}")
+    print(f"数据库: {db_path} ({'存在' if Path(db_path).exists() else '不存在'})")
+    if runtime:
+        print(f"当前状态: {runtime.get('state', 'unknown')}")
+        print(f"当前阶段: {runtime.get('phase', 'unknown')}")
+        print(f"已处理: {runtime.get('processed_total', 0)}")
+        if runtime.get("last_error"):
+            print(f"最近错误: {runtime.get('last_error')}")
+
+
+def _latest_log_file(log_dir):
+    if not log_dir.exists():
+        return None
+    files = list(log_dir.glob(LOG_PATTERN))
+    if not files:
+        return None
+    try:
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    return files[0]
+
+
+def _print_tail_from_file(log_file, lines):
+    buffer = deque(maxlen=lines)
+    with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            buffer.append(line)
+    for line in buffer:
+        print(line, end="")
+
+
+def _follow_file_logs(log_dir, log_file):
+    current_file = log_file
+    stream = open(current_file, "r", encoding="utf-8", errors="replace")
+    stream.seek(0, os.SEEK_END)
+
+    try:
+        while True:
+            line = stream.readline()
+            if line:
+                print(line, end="", flush=True)
+                continue
+
+            # 检测日志轮转，自动切换到最新文件
+            latest = _latest_log_file(log_dir)
+            if latest and latest != current_file:
+                stream.close()
+                current_file = latest
+                stream = open(current_file, "r", encoding="utf-8", errors="replace")
+                stream.seek(0, os.SEEK_END)
+                print(f"\n[log] 已切换到新日志文件: {current_file}", flush=True)
+                continue
+
+            # 检测文件被截断，回到文件开头继续追踪
+            try:
+                current_size = current_file.stat().st_size
+            except OSError:
+                current_size = 0
+            if stream.tell() > current_size:
+                stream.seek(0)
+
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n[log] 已停止日志追踪")
+        return EXIT_OK
+    finally:
+        stream.close()
+
+
+def _print_tail_from_syslog(lines):
+    try:
+        result = subprocess.run(
+            ["logread", "-e", "pixiv-backup"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as e:
+        print(f"读取系统日志失败: {e}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if result.returncode != 0:
+        err = (result.stderr or "").strip()
+        print(f"读取系统日志失败: {err or 'logread 返回非零状态'}", file=sys.stderr)
+        return EXIT_ERROR
+
+    output_lines = result.stdout.splitlines()
+    for line in output_lines[-lines:]:
+        print(line)
+    return EXIT_OK
+
+
+def _follow_syslog():
+    try:
+        proc = subprocess.Popen(["logread", "-f", "-e", "pixiv-backup"])
+    except OSError as e:
+        print(f"启动系统日志追踪失败: {e}", file=sys.stderr)
+        return EXIT_ERROR
+
+    try:
+        proc.wait()
+        return EXIT_OK if proc.returncode == 0 else EXIT_ERROR
+    except KeyboardInterrupt:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        print("\n[log] 已停止日志追踪")
+        return EXIT_OK
+
+
+def handle_log_command(args):
+    if args.lines <= 0:
+        print("参数错误: --lines 必须大于 0", file=sys.stderr)
+        return EXIT_USAGE
+
+    if args.file and args.syslog:
+        print("参数错误: --file 和 --syslog 不能同时使用，请二选一", file=sys.stderr)
+        return EXIT_USAGE
+
+    config = ConfigManager()
+    log_dir = config.get_log_dir()
+    latest_file = _latest_log_file(log_dir)
+    has_syslog = shutil.which("logread") is not None
+
+    source = "auto"
+    if args.file:
+        source = "file"
+    elif args.syslog:
+        source = "syslog"
+
+    if source == "file":
+        if not latest_file:
+            print(f"未找到文件日志: {log_dir}", file=sys.stderr)
+            return EXIT_ERROR
+        _print_tail_from_file(latest_file, args.lines)
+        if args.no_follow:
+            return EXIT_OK
+        return _follow_file_logs(log_dir, latest_file)
+
+    if source == "syslog":
+        if not has_syslog:
+            print("系统不支持 logread，无法读取 syslog", file=sys.stderr)
+            return EXIT_ERROR
+        ret = _print_tail_from_syslog(args.lines)
+        if ret != EXIT_OK or args.no_follow:
+            return ret
+        return _follow_syslog()
+
+    # auto: 文件日志优先，缺失时回退到 syslog
+    if latest_file:
+        _print_tail_from_file(latest_file, args.lines)
+        if args.no_follow:
+            return EXIT_OK
+        return _follow_file_logs(log_dir, latest_file)
+
+    if has_syslog:
+        ret = _print_tail_from_syslog(args.lines)
+        if ret != EXIT_OK or args.no_follow:
+            return ret
+        return _follow_syslog()
+
+    print("无可用日志来源: 文件日志不存在且系统不支持 logread", file=sys.stderr)
+    return EXIT_ERROR
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
