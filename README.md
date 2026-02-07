@@ -107,14 +107,15 @@ opkg install bin/packages/*/luci-app-pixiv-backup*.ipk
 或者使用命令行：
 ```bash
 # 测试配置
-/etc/init.d/pixiv-backup test
+pixiv-backup test
 
 # 启动服务
-/etc/init.d/pixiv-backup start
+pixiv-backup start
 
 # 查看状态
-/etc/init.d/pixiv-backup status
+pixiv-backup status
 ```
+说明：仍兼容 `/etc/init.d/pixiv-backup ...`，但推荐优先使用 `pixiv-backup` 统一入口。
 
 ## 目录结构
 
@@ -177,6 +178,27 @@ opkg install bin/packages/*/luci-app-pixiv-backup*.ipk
 
 ## 命令行工具
 
+### 服务控制（统一入口）
+```bash
+# 启动后台服务
+pixiv-backup start
+
+# 启动并立即触发新一轮（跳过冷却）
+pixiv-backup start --force-run
+
+# 停止后台服务
+pixiv-backup stop
+
+# 重启后台服务
+pixiv-backup restart
+
+# 重启并立即触发新一轮
+pixiv-backup restart --force-run
+
+# 执行服务测试（与 init.d test 等价）
+pixiv-backup test
+```
+
 ### 手动运行备份
 ```bash
 pixiv-backup run 20
@@ -225,7 +247,7 @@ pixiv-backup log --syslog
 ```bash
 pixiv-backup --daemon
 ```
-说明：daemon 模式按配置巡检并使用 `max_downloads` 作为每轮上限。
+说明：`--daemon` 为兼容入口，正常服务管理推荐使用 `pixiv-backup start/stop/restart`。
 
 ### Refresh Token 获取说明
 ```bash
