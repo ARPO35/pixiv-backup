@@ -72,9 +72,21 @@ class DatabaseManager:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_illusts_user_id ON illusts(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_illusts_downloaded ON illusts(downloaded)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_illusts_type ON illusts(type)')
+
+        # 兼容旧版本数据库结构，补齐缺失列
+        self._ensure_column(conn, "illusts", "file_size", "INTEGER")
+        self._ensure_column(conn, "download_history", "file_size", "INTEGER")
         
         conn.commit()
         conn.close()
+
+    def _ensure_column(self, conn, table_name, column_name, column_def):
+        """确保表中存在指定列（用于旧版本数据库迁移）"""
+        cursor = conn.cursor()
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = {row[1] for row in cursor.fetchall()}
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
         
     def save_user(self, user_info):
         """保存用户信息"""
