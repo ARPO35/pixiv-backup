@@ -321,7 +321,18 @@ class PixivBackupService:
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description="Pixiv 备份服务")
+    parser = argparse.ArgumentParser(
+        description="Pixiv 备份服务",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "log 参数摘要:\n"
+            "  pixiv-backup log [-n N] [--no-follow] [--file | --syslog]\n"
+            "    -n/--lines      先输出最近 N 行（默认 100）\n"
+            "    --no-follow     仅输出快照，不持续追踪\n"
+            "    --file          强制读取文件日志\n"
+            "    --syslog        强制读取系统日志"
+        ),
+    )
     parser.add_argument("--daemon", action="store_true", help=argparse.SUPPRESS)
 
     subparsers = parser.add_subparsers(dest="command")
@@ -337,6 +348,11 @@ def main():
     log_parser.add_argument("--file", action="store_true", help="强制从文件日志读取")
     log_parser.add_argument("--syslog", action="store_true", help="强制从系统日志读取")
 
+    repair_parser = subparsers.add_parser("repair", help="诊断并修复常见问题")
+    repair_parser.add_argument("--check", action="store_true", help="仅检查，不执行修复")
+    repair_parser.add_argument("--apply", action="store_true", help="直接执行修复")
+    repair_parser.add_argument("-y", "--yes", action="store_true", help="自动确认修复")
+
     args = parser.parse_args()
 
     if args.daemon:
@@ -350,6 +366,9 @@ def main():
 
     if args.command == "log":
         return handle_log_command(args)
+
+    if args.command == "repair":
+        return handle_repair_command(args)
 
     if args.command == "run":
         if args.count <= 0:
@@ -577,6 +596,203 @@ def handle_log_command(args):
 
     print("无可用日志来源: 文件日志不存在且系统不支持 logread", file=sys.stderr)
     return EXIT_ERROR
+
+
+def _is_interactive_tty():
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def _confirm_repair():
+    try:
+        choice = input("检测到可修复问题，是否立即修复？[y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return choice in ("y", "yes")
+
+
+def _collect_repair_issues(config):
+    issues = []
+
+    # 依赖检查
+    try:
+        import requests  # noqa: F401
+    except Exception as e:
+        issues.append({
+            "id": "missing_requests",
+            "message": f"依赖缺失: requests ({e})",
+            "fix_action": "install_requests",
+            "fixable": True,
+        })
+
+    try:
+        import pixivpy3  # noqa: F401
+    except Exception as e:
+        issues.append({
+            "id": "missing_pixivpy3",
+            "message": f"依赖缺失: pixivpy3 ({e})",
+            "fix_action": "install_pixivpy3",
+            "fixable": True,
+        })
+
+    # 配置检查
+    if not config.validate_required():
+        issues.append({
+            "id": "invalid_required_config",
+            "message": "UCI 必填配置不完整（user_id/refresh_token/output_dir）",
+            "fix_action": None,
+            "fixable": False,
+        })
+
+    # 目录检查
+    output_dir = Path(config.get_output_dir())
+    required_dirs = [
+        output_dir / "img",
+        output_dir / "metadata",
+        output_dir / "data" / "cache",
+        output_dir / "data" / "thumbnails",
+        output_dir / "data" / "logs",
+    ]
+    for d in required_dirs:
+        if not d.exists():
+            issues.append({
+                "id": "missing_dir",
+                "message": f"目录不存在: {d}",
+                "fix_action": "create_runtime_dirs",
+                "fixable": True,
+            })
+
+    # 数据库检查（存在则可读，不存在则可初始化）
+    db_path = Path(config.get_database_path())
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("SELECT 1")
+            conn.close()
+        except Exception as e:
+            issues.append({
+                "id": "db_open_failed",
+                "message": f"数据库无法打开: {db_path} ({e})",
+                "fix_action": "init_database",
+                "fixable": True,
+            })
+    else:
+        issues.append({
+            "id": "db_missing",
+            "message": f"数据库不存在: {db_path}",
+            "fix_action": "init_database",
+            "fixable": True,
+        })
+
+    return issues
+
+
+def _install_with_pip(package_name):
+    pip3 = shutil.which("pip3")
+    if not pip3:
+        return False, "pip3 不可用"
+    result = subprocess.run(
+        [pip3, "install", "--no-cache-dir", package_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "").strip()
+        return False, message or "安装失败"
+    return True, f"已安装 {package_name}"
+
+
+def _apply_repair_action(config, action):
+    if action == "install_pixivpy3":
+        ok, message = _install_with_pip("pixivpy3")
+        return ok, f"pixivpy3: {message}"
+    if action == "install_requests":
+        ok, message = _install_with_pip("requests")
+        return ok, f"requests: {message}"
+    if action == "create_runtime_dirs":
+        output_dir = Path(config.get_output_dir())
+        for d in [
+            output_dir / "img",
+            output_dir / "metadata",
+            output_dir / "data" / "cache",
+            output_dir / "data" / "thumbnails",
+            output_dir / "data" / "logs",
+        ]:
+            d.mkdir(parents=True, exist_ok=True)
+        return True, "已补齐运行目录"
+    if action == "init_database":
+        DatabaseManager(config)
+        return True, "已初始化/迁移数据库结构"
+    return False, f"未知修复动作: {action}"
+
+
+def _dedup_fix_actions(issues):
+    actions = []
+    for issue in issues:
+        action = issue.get("fix_action")
+        if action and action not in actions:
+            actions.append(action)
+    return actions
+
+
+def handle_repair_command(args):
+    if args.check and args.apply:
+        print("参数错误: --check 和 --apply 不能同时使用", file=sys.stderr)
+        return EXIT_USAGE
+
+    config = ConfigManager()
+    issues = _collect_repair_issues(config)
+
+    if not issues:
+        print("检查完成：未发现问题。")
+        return EXIT_OK
+
+    print(f"检查完成：发现 {len(issues)} 项问题：")
+    for idx, issue in enumerate(issues, start=1):
+        status = "可修复" if issue.get("fixable") else "需手动处理"
+        print(f"{idx}. [{status}] {issue.get('message')}")
+
+    if args.check:
+        return EXIT_USAGE
+
+    apply_fix = args.apply
+    if not apply_fix:
+        if args.yes:
+            apply_fix = True
+        elif _is_interactive_tty():
+            apply_fix = _confirm_repair()
+        else:
+            # 按既定计划：非交互场景默认自动修复
+            print("检测到非交互环境，默认执行修复。")
+            apply_fix = True
+
+    if not apply_fix:
+        print("未执行修复。")
+        return EXIT_USAGE
+
+    actions = _dedup_fix_actions(issues)
+    if not actions:
+        print("未发现可自动修复的问题，请按提示手动处理。", file=sys.stderr)
+        return EXIT_ERROR
+
+    print("开始执行修复...")
+    for action in actions:
+        ok, message = _apply_repair_action(config, action)
+        flag = "成功" if ok else "失败"
+        print(f"- {flag}: {message}")
+        if not ok:
+            return EXIT_ERROR
+
+    remaining = _collect_repair_issues(config)
+    if remaining:
+        print(f"修复后仍有 {len(remaining)} 项问题：", file=sys.stderr)
+        for idx, issue in enumerate(remaining, start=1):
+            status = "可修复" if issue.get("fixable") else "需手动处理"
+            print(f"{idx}. [{status}] {issue.get('message')}", file=sys.stderr)
+        return EXIT_ERROR
+
+    print("修复完成：问题已清除。")
+    return EXIT_OK
 
 if __name__ == "__main__":
     sys.exit(main())

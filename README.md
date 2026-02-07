@@ -188,6 +188,21 @@ pixiv-backup run 20
 pixiv-backup status
 ```
 
+### 诊断与修复
+```bash
+# 检查并按提示修复（非交互环境默认自动修复）
+pixiv-backup repair
+
+# 仅检查，不修复
+pixiv-backup repair --check
+
+# 直接修复（跳过询问）
+pixiv-backup repair --apply -y
+```
+说明：
+- `--check` 与 `--apply` 不能同时使用。
+- 仅检查发现问题时会返回非 0。
+
 ### 持续查看服务日志
 ```bash
 # 默认先输出最近100行，然后持续追踪（Ctrl+C退出）
