@@ -36,6 +36,7 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 LOG_PATTERN = "pixiv-backup-*.log"
+INITD_PATH = "/etc/init.d/pixiv-backup"
 
 class PixivBackupService:
     def __init__(self):
@@ -382,6 +383,16 @@ def main():
     repair_parser.add_argument("--apply", action="store_true", help="直接执行修复")
     repair_parser.add_argument("-y", "--yes", action="store_true", help="自动确认修复")
 
+    start_parser = subparsers.add_parser("start", help="启动后台服务")
+    start_parser.add_argument("--force-run", action="store_true", help="启动前写入 force_run.flag 以立即触发新一轮")
+
+    subparsers.add_parser("stop", help="停止后台服务")
+
+    restart_parser = subparsers.add_parser("restart", help="重启后台服务")
+    restart_parser.add_argument("--force-run", action="store_true", help="重启前写入 force_run.flag 以立即触发新一轮")
+
+    subparsers.add_parser("test", help="执行服务测试（透传 init.d test）")
+
     args = parser.parse_args()
 
     if args.daemon:
@@ -398,6 +409,22 @@ def main():
 
     if args.command == "repair":
         return handle_repair_command(args)
+
+    if args.command == "start":
+        if args.force_run:
+            _touch_force_run_flag()
+        return _run_initd_command("start")
+
+    if args.command == "stop":
+        return _run_initd_command("stop")
+
+    if args.command == "restart":
+        if args.force_run:
+            _touch_force_run_flag()
+        return _run_initd_command("restart")
+
+    if args.command == "test":
+        return _run_initd_command("test")
 
     if args.command == "run":
         if args.count <= 0:
@@ -822,6 +849,35 @@ def handle_repair_command(args):
 
     print("修复完成：问题已清除。")
     return EXIT_OK
+
+
+def _run_initd_command(action):
+    initd = Path(INITD_PATH)
+    if not initd.exists():
+        print(f"服务脚本不存在: {initd}", file=sys.stderr)
+        return EXIT_ERROR
+
+    result = subprocess.run(
+        [str(initd), action],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return EXIT_OK if result.returncode == 0 else EXIT_ERROR
+
+
+def _touch_force_run_flag():
+    try:
+        config = ConfigManager()
+        flag_file = Path(config.get_output_dir()) / "data" / "force_run.flag"
+        flag_file.parent.mkdir(parents=True, exist_ok=True)
+        flag_file.touch()
+    except Exception as e:
+        print(f"写入 force_run.flag 失败: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     sys.exit(main())
