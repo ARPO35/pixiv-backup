@@ -571,6 +571,11 @@ class PixivCrawler:
 
             # 处理下载结果
             if result["success"]:
+                if not self.downloader.is_illust_fully_downloaded(illust):
+                    incomplete_error = self._with_illust_context(illust_id, "文件未完整下载（存在缺页或缺失文件）")
+                    self.database.record_download_error(illust_id, incomplete_error)
+                    self._log_event("download_finish", illust_id=illust_id, status="failed", error=incomplete_error)
+                    return {"success": False, "error": incomplete_error}
                 # 标记为已下载
                 file_size = result.get("file_size")
                 self.database.mark_as_downloaded(illust_id, result["file_path"], file_size)
@@ -611,7 +616,8 @@ class PixivCrawler:
 
                 r = self.downloader.download_image(image_url, illust, page_index=idx)
                 if not r.get("success") and not r.get("skipped", False):
-                    return r
+                    err = r.get("error") or "下载失败"
+                    return {"success": False, "error": f"page_index={idx} image_url={image_url} {err}"}
 
                 downloaded += 1
                 total_size += r.get("file_size", 0) or 0
@@ -638,6 +644,9 @@ class PixivCrawler:
         result = self.downloader.download_image(image_url, illust)
         if result.get("skipped", False):
             return {"success": True, "file_path": result.get("file_path", ""), "file_size": result.get("file_size", 0), "message": "已存在"}
+        if not result.get("success"):
+            err = result.get("error") or "下载失败"
+            return {"success": False, "error": f"page_index=0 image_url={image_url} {err}"}
         return result
 
     def test_connection(self):

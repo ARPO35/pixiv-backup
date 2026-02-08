@@ -76,14 +76,17 @@ class DownloadManager:
             }
             
         except requests.exceptions.Timeout:
-            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error="下载超时")
-            return {"success": False, "error": "下载超时"}
+            err = f"page_index={page_index if page_index is not None else 0} image_url={url} 下载超时"
+            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=err)
+            return {"success": False, "error": err}
         except requests.exceptions.RequestException as e:
-            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=f"网络错误: {str(e)}")
-            return {"success": False, "error": f"网络错误: {str(e)}"}
+            err = f"page_index={page_index if page_index is not None else 0} image_url={url} 网络错误: {str(e)}"
+            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=err)
+            return {"success": False, "error": err}
         except Exception as e:
-            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=f"下载失败: {str(e)}")
-            return {"success": False, "error": f"下载失败: {str(e)}"}
+            err = f"page_index={page_index if page_index is not None else 0} image_url={url} 下载失败: {str(e)}"
+            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=err)
+            return {"success": False, "error": err}
             
     def _is_already_downloaded(self, illust_id):
         """检查是否已下载"""
@@ -96,6 +99,56 @@ class DownloadManager:
         if not illust_dir.exists():
             return False
         return any(p.is_file() for p in illust_dir.iterdir())
+
+    def _single_image_url(self, illust_info):
+        single = illust_info.get("meta_single_page", {}) if isinstance(illust_info.get("meta_single_page"), dict) else {}
+        image_url = single.get("original_image_url")
+        if not image_url:
+            image_url = illust_info.get("image_urls", {}).get("original") or illust_info.get("image_urls", {}).get("large")
+        return image_url
+
+    def _get_page_image_url(self, illust_info, page_index):
+        meta_pages = illust_info.get("meta_pages") or []
+        if isinstance(meta_pages, list) and page_index < len(meta_pages):
+            page = meta_pages[page_index]
+            image_urls = page.get("image_urls", {}) if isinstance(page, dict) else {}
+            return image_urls.get("original") or image_urls.get("large")
+        return None
+
+    def is_illust_fully_downloaded(self, illust_info):
+        """检查作品是否完整下载（多图按页检查）"""
+        illust_id = int(illust_info["id"])
+        illust_type = illust_info.get("type", "illust")
+
+        if illust_type == "ugoira":
+            zip_path = self._get_ugoira_save_path(illust_info).with_suffix(".zip")
+            return zip_path.exists() and zip_path.is_file()
+
+        page_count = int(illust_info.get("page_count", 1) or 1)
+        if page_count > 1:
+            for idx in range(page_count):
+                image_url = self._get_page_image_url(illust_info, idx)
+                if image_url:
+                    expected = self._get_save_path(image_url, illust_info, page_index=idx)
+                    if not expected.exists():
+                        return False
+                    continue
+
+                # URL 不完整时按 p{idx}. 任意扩展名兜底
+                illust_dir = self.config.get_image_dir() / str(illust_id)
+                matches = list(illust_dir.glob(f"{illust_id}.p{idx}.*")) if illust_dir.exists() else []
+                if not matches:
+                    return False
+            return True
+
+        image_url = self._single_image_url(illust_info)
+        if image_url:
+            return self._get_save_path(image_url, illust_info).exists()
+
+        illust_dir = self.config.get_image_dir() / str(illust_id)
+        if not illust_dir.exists():
+            return False
+        return any(p.is_file() for p in illust_dir.glob(f"{illust_id}.*"))
         
     def _get_save_path(self, url, illust_info, page_index=None):
         """获取保存路径"""
