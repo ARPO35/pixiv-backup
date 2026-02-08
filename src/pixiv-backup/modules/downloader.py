@@ -259,14 +259,17 @@ class DownloadManager:
             if zip_path.exists():
                 self._log_event("file_skip", illust_id=illust_id, page_index="-", path=zip_path, reason="file_exists")
                 return {"success": False, "skipped": True, "message": "已存在", "file_path": str(zip_path), "file_size": zip_path.stat().st_size}
-            self._log_event("file_download_start", illust_id=illust_id, page_index="-", url=ugoira_info.get("zip_url", ""), path=zip_path)
             
             # 下载动图帧
             frames = ugoira_info.get("frames", [])
-            zip_url = ugoira_info.get("zip_url", "")
+            zip_url, zip_source = self._resolve_ugoira_zip_url(ugoira_info)
             
             if not zip_url:
-                return {"success": False, "error": "没有找到动图ZIP文件"}
+                available_keys = ",".join(sorted(list(ugoira_info.keys()))) if isinstance(ugoira_info, dict) else "-"
+                err = f"没有找到动图ZIP文件(available_keys={available_keys})"
+                self._log_event("file_download_finish", illust_id=illust_id, page_index="-", status="failed", error=err)
+                return {"success": False, "error": err}
+            self._log_event("file_download_start", illust_id=illust_id, page_index="-", url=zip_url, path=zip_path, zip_source=zip_source)
                 
             # 下载ZIP文件
             response = self.session.get(zip_url, timeout=self.timeout, stream=True)
@@ -297,6 +300,7 @@ class DownloadManager:
             metadata["ugoira_frames"] = frames
             metadata["ugoira_zip_url"] = zip_url
             metadata_path = self._save_metadata(metadata)
+            self._log_event("file_download_finish", illust_id=illust_id, page_index="-", status="success", path=zip_path, file_size=file_size, zip_source=zip_source)
             
             return {
                 "success": True,
@@ -314,6 +318,20 @@ class DownloadManager:
                 return {"success": False, "stopped": True, "error": "stop_requested"}
             self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index="-", status="failed", error=f"动图下载失败: {str(e)}")
             return {"success": False, "error": f"动图下载失败: {str(e)}"}
+
+    def _resolve_ugoira_zip_url(self, ugoira_info):
+        if not isinstance(ugoira_info, dict):
+            return "", "none"
+        zip_url = ugoira_info.get("zip_url")
+        if zip_url:
+            return zip_url, "zip_url"
+        zip_urls = ugoira_info.get("zip_urls")
+        if isinstance(zip_urls, dict):
+            for key in ("original", "medium", "large", "small"):
+                value = zip_urls.get(key)
+                if value:
+                    return value, f"zip_urls.{key}"
+        return "", "none"
             
     def _get_ugoira_save_path(self, illust_info):
         """获取动图保存路径"""

@@ -672,14 +672,16 @@ class PixivCrawler:
             if illust_type == "ugoira":
                 # 动图需要特殊处理
                 api = self._get_api()
-                ugoira_info = api.ugoira_metadata(illust_id)
+                ugoira_response = api.ugoira_metadata(illust_id)
+                ugoira_info = self._extract_ugoira_metadata(ugoira_response)
 
-                if ugoira_info and "ugoira_metadata" in ugoira_info:
-                    result = self.downloader.download_ugoira(illust, ugoira_info["ugoira_metadata"])
+                if ugoira_info:
+                    result = self.downloader.download_ugoira(illust, ugoira_info)
                 else:
+                    response_keys = ",".join(sorted(list(ugoira_response.keys()))) if isinstance(ugoira_response, dict) else "-"
                     return {
                         "success": False,
-                        "error": self._with_illust_context(illust_id, "无法获取动图信息")
+                        "error": self._with_illust_context(illust_id, f"无法获取动图信息(response_keys={response_keys})")
                     }
             else:
                 # 静态图片：优先下载原图，支持多图逐页下载
@@ -777,6 +779,17 @@ class PixivCrawler:
             err = result.get("error") or "下载失败"
             return {"success": False, "error": f"page_index=0 image_url={image_url} {err}"}
         return result
+
+    def _extract_ugoira_metadata(self, ugoira_response):
+        if not ugoira_response:
+            return None
+        if isinstance(ugoira_response, dict):
+            nested = ugoira_response.get("ugoira_metadata")
+            if isinstance(nested, dict):
+                return nested
+            if ugoira_response.get("zip_url") or isinstance(ugoira_response.get("zip_urls"), dict):
+                return ugoira_response
+        return None
 
     def test_connection(self):
         """测试连接"""
