@@ -52,7 +52,13 @@ start_service() {
 
 stop_service() {
     echo "停止Pixiv备份服务..."
-    procd_kill
+    if ! /etc/init.d/pixiv-backup running >/dev/null 2>&1; then
+        echo "服务未运行"
+        return 0
+    fi
+
+    # 服务不存在时 procd_kill 会打印 ubus Not found，静默处理避免误报
+    procd_kill "$PROG" >/dev/null 2>&1 || true
     echo "服务已停止"
 }
 
