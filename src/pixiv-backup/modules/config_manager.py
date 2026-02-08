@@ -168,7 +168,7 @@ class ConfigManager:
             return 1.5
 
     def get_interval_jitter_ms(self):
-        """获取巡检/冷却随机偏移毫秒（仅增加不减少）"""
+        """获取每张图片下载间隔随机偏移毫秒（仅增加不减少）"""
         try:
             value = int(self.get(self.main_section, "interval_jitter_ms", "1000"))
             return value if value >= 0 else 1000

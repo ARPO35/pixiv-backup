@@ -114,7 +114,7 @@ cooldown_after_error_minutes = s:option(Value, "cooldown_after_error_minutes", "
 cooldown_after_error_minutes.default = "180"
 cooldown_after_error_minutes.datatype = "uinteger"
 
-interval_jitter_ms = s:option(Value, "interval_jitter_ms", "间隔随机偏移（毫秒）", "每轮等待额外增加随机偏移，范围 [0, 该值]，仅增加不减少")
+interval_jitter_ms = s:option(Value, "interval_jitter_ms", "下载间隔随机偏移（毫秒）", "每张图片下载间隔额外增加随机偏移，范围 [0, 该值]，仅增加不减少")
 interval_jitter_ms.default = "1000"
 interval_jitter_ms.datatype = "uinteger"
 
@@ -177,10 +177,6 @@ runtime_cooldown.cfgvalue = function(self, section)
     if data.state == "cooldown" then
         local reason = data.cooldown_reason or "unknown"
         local next_run_at = data.next_run_at or "-"
-        local jitter_ms = tonumber(data.cooldown_jitter_ms or 0) or 0
-        if jitter_ms > 0 then
-            return string.format("原因: %s, 下次巡检: %s, 随机偏移: +%dms", reason, next_run_at, jitter_ms)
-        end
         return string.format("原因: %s, 下次巡检: %s", reason, next_run_at)
     end
     return "无"

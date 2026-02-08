@@ -12,7 +12,6 @@ import sqlite3
 import argparse
 import shutil
 import subprocess
-import random
 import signal
 import threading
 from pathlib import Path
@@ -40,7 +39,6 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 LOG_PATTERN = "pixiv-backup-*.log"
 INITD_PATH = "/etc/init.d/pixiv-backup"
-DEFAULT_INTERVAL_JITTER_MS = 1000
 STOP_EVENT = threading.Event()
 
 class PixivBackupService:
@@ -506,8 +504,6 @@ def _run_daemon_loop(service):
     sync_interval_minutes = service.config.get_sync_interval_minutes()
     cooldown_limit_minutes = service.config.get_cooldown_after_limit_minutes()
     cooldown_error_minutes = service.config.get_cooldown_after_error_minutes()
-    interval_jitter_ms = service.config.get_interval_jitter_ms()
-
     while not service.is_stop_requested():
         service.logger.info(_event_line("daemon_cycle_start", mode=service.config.get_download_mode(), max_downloads=service.config.get_max_downloads()))
         result = service.run(max_download_limit=service.config.get_max_downloads())
@@ -525,8 +521,7 @@ def _run_daemon_loop(service):
             base_wait_seconds = sync_interval_minutes * 60
             reason = "normal_interval"
 
-        jitter_seconds = _random_non_negative_jitter_seconds(interval_jitter_ms)
-        wait_seconds = base_wait_seconds + jitter_seconds
+        wait_seconds = base_wait_seconds
         next_run = now + timedelta(seconds=wait_seconds)
         service._write_runtime_status({
             "state": "cooldown",
@@ -535,11 +530,9 @@ def _run_daemon_loop(service):
             "next_run_at": next_run.strftime("%Y-%m-%d %H:%M:%S"),
             "cooldown_seconds": wait_seconds,
             "base_cooldown_seconds": base_wait_seconds,
-            "cooldown_jitter_ms": int(jitter_seconds * 1000),
         })
         service.logger.info(
-            f"进入冷却({reason})，基础等待 {base_wait_seconds}s，"
-            f"随机偏移 +{int(jitter_seconds * 1000)}ms，"
+            f"进入冷却({reason})，等待 {base_wait_seconds}s，"
             f"下次巡检时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}"
         )
         service.logger.info(
@@ -547,7 +540,6 @@ def _run_daemon_loop(service):
                 "daemon_cycle_cooldown",
                 reason=reason,
                 base_wait_seconds=base_wait_seconds,
-                jitter_ms=int(jitter_seconds * 1000),
                 wait_seconds=wait_seconds,
                 next_run_at=next_run.strftime("%Y-%m-%d %H:%M:%S"),
             )
@@ -1036,18 +1028,6 @@ def _force_kill_daemon_process():
     pkill = shutil.which("pkill")
     if pkill:
         subprocess.run([pkill, "-f", "pixiv-backup --daemon"], check=False)
-
-
-def _random_non_negative_jitter_seconds(max_jitter_ms):
-    try:
-        jitter_ms = int(max_jitter_ms)
-    except Exception:
-        jitter_ms = DEFAULT_INTERVAL_JITTER_MS
-    if jitter_ms < 0:
-        jitter_ms = 0
-    if jitter_ms == 0:
-        return 0.0
-    return random.randint(0, jitter_ms) / 1000.0
 
 
 def _install_signal_handlers(service):

@@ -1,5 +1,6 @@
 import json
 import time
+import random
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,11 +20,13 @@ class PixivCrawler:
         self.logger = logging.getLogger(__name__)
         self.high_speed_queue_size = self.config.get_high_speed_queue_size()
         self.low_speed_interval_seconds = self.config.get_low_speed_interval_seconds()
+        self.interval_jitter_ms = self.config.get_interval_jitter_ms()
         self.task_queue_file = self.config.get_data_dir() / "task_queue.json"
         self._log_event(
             "crawler_init",
             high_speed_queue_size=self.high_speed_queue_size,
             low_speed_interval_seconds=self.low_speed_interval_seconds,
+            interval_jitter_ms=self.interval_jitter_ms,
             task_queue_file=self.task_queue_file,
         )
 
@@ -120,8 +123,19 @@ class PixivCrawler:
             return
         if self.high_speed_queue_size > 0 and processed_total <= self.high_speed_queue_size:
             return
-        if self.low_speed_interval_seconds > 0:
-            time.sleep(self.low_speed_interval_seconds)
+        base_seconds = self.low_speed_interval_seconds if self.low_speed_interval_seconds > 0 else 0.0
+        jitter_seconds = 0.0
+        if self.interval_jitter_ms > 0:
+            jitter_seconds = random.randint(0, int(self.interval_jitter_ms)) / 1000.0
+        sleep_seconds = base_seconds + jitter_seconds
+        if sleep_seconds > 0:
+            self._log_event(
+                "queue_sleep",
+                base_seconds=f"{base_seconds:.3f}",
+                jitter_ms=int(jitter_seconds * 1000),
+                sleep_seconds=f"{sleep_seconds:.3f}",
+            )
+            time.sleep(sleep_seconds)
 
     def _illust_url(self, illust_id):
         return f"https://www.pixiv.net/artworks/{illust_id}"
