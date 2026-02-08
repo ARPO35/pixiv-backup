@@ -62,6 +62,12 @@ stop_service() {
     echo "服务已停止"
 }
 
+# 覆盖 rc.common 默认 stop，避免服务已不存在时出现 ubus Not found 误报
+stop() {
+    stop_service
+    return 0
+}
+
 restart() {
     stop
     sleep 1

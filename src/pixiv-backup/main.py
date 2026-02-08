@@ -967,11 +967,24 @@ def _run_initd_command(action):
         text=True,
         check=False,
     )
+    effective_returncode = result.returncode
+
     if result.stdout:
         print(result.stdout, end="")
+
     if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
-    if action == "stop" and result.returncode == 0:
+        if action == "stop":
+            filtered_stderr, benign_not_found = _filter_stop_stderr(result.stderr)
+            if filtered_stderr:
+                print(filtered_stderr, end="", file=sys.stderr)
+            if effective_returncode != 0 and benign_not_found and not filtered_stderr.strip():
+                # 服务已经不存在时，rc.common/procd 可能返回 Not found，将其视为已停止
+                effective_returncode = 0
+                _emit_cli_audit(_event_line("initd_stop_not_found_ignored", status="ok"))
+        else:
+            print(result.stderr, end="", file=sys.stderr)
+
+    if action == "stop" and effective_returncode == 0:
         time.sleep(1)
         if _is_daemon_process_alive():
             _emit_cli_audit(_event_line("stop_residual_detected", status="warning"))
@@ -986,11 +999,24 @@ def _run_initd_command(action):
         _event_line(
             "initd_command",
             action=action,
-            status="ok" if result.returncode == 0 else "error",
-            exit_code=result.returncode,
+            status="ok" if effective_returncode == 0 else "error",
+            exit_code=effective_returncode,
+            raw_exit_code=result.returncode,
         )
     )
-    return EXIT_OK if result.returncode == 0 else EXIT_ERROR
+    return EXIT_OK if effective_returncode == 0 else EXIT_ERROR
+
+
+def _filter_stop_stderr(stderr_text):
+    benign_not_found = False
+    keep_lines = []
+    for line in (stderr_text or "").splitlines(keepends=True):
+        normalized = line.strip()
+        if "ubus call service delete" in normalized and "Not found" in normalized:
+            benign_not_found = True
+            continue
+        keep_lines.append(line)
+    return "".join(keep_lines), benign_not_found
 
 
 def _is_daemon_process_alive():
