@@ -226,38 +226,11 @@ class PixivBackupService:
             download_mode = self.config.get_download_mode()
             user_id = self.config.get_user_id()
             max_per_sync = self.config.get_max_downloads() if max_download_limit is None else int(max_download_limit)
-            remaining_downloads = max_per_sync if max_per_sync > 0 else 0
-            
-            stats = {
-                "success": 0,
-                "failed": 0,
-                "skipped": 0,
-                "total": 0,
-                "hit_max_downloads": False,
-                "rate_limited": False,
-                "last_error": None
-            }
-            
-            if download_mode in ["bookmarks", "both"]:
-                self.logger.info(f"开始下载用户 {user_id} 的收藏...")
-                bookmark_stats = self.crawler.download_user_bookmarks(user_id, remaining_downloads if max_per_sync > 0 else 0)
-                self._merge_stats(stats, bookmark_stats)
-                if max_per_sync > 0:
-                    remaining_downloads = max(0, remaining_downloads - int(bookmark_stats.get("success", 0)))
-                if stats.get("rate_limited"):
-                    self.logger.warning("检测到限速/服务异常，结束本轮同步")
-                elif max_per_sync > 0 and remaining_downloads <= 0:
-                    stats["hit_max_downloads"] = True
-                    self.logger.info("本轮同步达到最大下载数量，结束本轮")
-                
-            if download_mode in ["following", "both"] and not stats.get("rate_limited") and not (max_per_sync > 0 and remaining_downloads <= 0):
-                self.logger.info(f"开始下载用户 {user_id} 的关注用户作品...")
-                following_stats = self.crawler.download_following_illusts(user_id, remaining_downloads if max_per_sync > 0 else 0)
-                self._merge_stats(stats, following_stats)
-                if max_per_sync > 0:
-                    remaining_downloads = max(0, remaining_downloads - int(following_stats.get("success", 0)))
-                    if remaining_downloads <= 0:
-                        stats["hit_max_downloads"] = True
+            stats = self.crawler.sync_with_task_queue(user_id, download_mode, max_per_sync)
+            if stats.get("rate_limited"):
+                self.logger.warning("检测到限速/服务异常，结束本轮同步")
+            elif stats.get("hit_max_downloads"):
+                self.logger.info("本轮同步达到最大下载数量，结束本轮")
                 
             # 计算运行时间
             elapsed_time = time.time() - start_time

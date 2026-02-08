@@ -1,6 +1,10 @@
+import json
 import time
 import logging
-from typing import Dict, List
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict
+
 
 class PixivCrawler:
     def __init__(self, config, auth_manager, database, downloader, progress_callback=None):
@@ -14,10 +18,12 @@ class PixivCrawler:
         self.logger = logging.getLogger(__name__)
         self.high_speed_queue_size = self.config.get_high_speed_queue_size()
         self.low_speed_interval_seconds = self.config.get_low_speed_interval_seconds()
+        self.task_queue_file = self.config.get_data_dir() / "task_queue.json"
         self._log_event(
             "crawler_init",
             high_speed_queue_size=self.high_speed_queue_size,
             low_speed_interval_seconds=self.low_speed_interval_seconds,
+            task_queue_file=self.task_queue_file,
         )
 
     def _event_line(self, event, **fields):
@@ -34,7 +40,7 @@ class PixivCrawler:
 
     def _log_event(self, event, **fields):
         self.logger.info(self._event_line(event, **fields))
-        
+
     def _get_api(self):
         """获取API客户端"""
         if not self.api:
@@ -111,40 +117,69 @@ class PixivCrawler:
         if not msg:
             msg = "未知错误"
         return f"pid={illust_id} url={self._illust_url(illust_id)} error={msg}"
-        
-    def download_user_bookmarks(self, user_id, max_downloads_override=None):
-        """下载用户收藏"""
-        self.logger.info(f"开始下载用户 {user_id} 的收藏...")
+
+    def _now_str(self):
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _parse_time(self, value):
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+
+    def _json_safe(self, obj):
+        return json.loads(json.dumps(obj, ensure_ascii=False, default=str))
+
+    def _load_task_queue(self):
+        if not self.task_queue_file.exists():
+            return []
+        try:
+            with open(self.task_queue_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            items = data.get("items", []) if isinstance(data, dict) else []
+            return items if isinstance(items, list) else []
+        except Exception as e:
+            self._log_event("queue_load_error", error=e)
+            return []
+
+    def _save_task_queue(self, items):
+        payload = {
+            "version": 1,
+            "updated_at": self._now_str(),
+            "items": items,
+        }
+        self.task_queue_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.task_queue_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    def _upsert_candidate(self, candidates, illust, is_bookmarked, is_following_author):
+        illust_id = int(illust["id"])
+        item = candidates.get(illust_id)
+        if not item:
+            copied = self._json_safe(illust)
+            copied["is_bookmarked"] = bool(is_bookmarked)
+            copied["is_following_author"] = bool(is_following_author)
+            candidates[illust_id] = copied
+            return
+
+        item["is_bookmarked"] = bool(item.get("is_bookmarked", False) or is_bookmarked)
+        item["is_following_author"] = bool(item.get("is_following_author", False) or is_following_author)
+
+    def _scan_bookmarks(self, user_id, candidates):
+        stats = {
+            "scanned": 0,
+            "filtered": 0,
+            "rate_limited": False,
+            "last_error": None,
+        }
+        api = self._get_api()
+        restrict = self.config.get_restrict_mode()
+        next_url = None
         self._log_event("scan_start", source="bookmarks", user_id=user_id)
-        
-        api = self._get_api()
-        restrict = self.config.get_restrict_mode()
-        max_downloads = self.config.get_max_downloads() if max_downloads_override is None else max_downloads_override
-        
-        stats = {
-            "success": 0,
-            "failed": 0,
-            "skipped": 0,
-            "total": 0,
-            "hit_max_downloads": False,
-            "rate_limited": False,
-            "last_error": None
-        }
-        self._notify_progress("bookmarks", stats, "开始同步收藏")
-        
-        try:
-            # 获取收藏列表
-            next_url = None
-            downloaded_count = 0
-            
-            while True:
-                # 限制最大下载数量
-                if max_downloads > 0 and downloaded_count >= max_downloads:
-                    self.logger.info(f"达到最大下载数量限制: {max_downloads}")
-                    stats["hit_max_downloads"] = True
-                    break
-                    
-                # 获取下一页
+        while True:
+            try:
                 if next_url:
                     page_result = api.user_bookmarks_illust(
                         user_id=int(user_id),
@@ -152,255 +187,377 @@ class PixivCrawler:
                         **self._next_url_kwargs(next_url, {"user_id", "restrict"})
                     )
                 else:
-                    # 第一页
                     page_result = api.user_bookmarks_illust(
                         user_id=int(user_id),
-                        restrict=restrict
-                    )
-                    
-                if not page_result or "illusts" not in page_result:
-                    self.logger.warning("没有获取到作品列表")
-                    break
-                    
-                illusts = page_result.get("illusts", [])
-                self.logger.info(f"获取到 {len(illusts)} 个作品")
-                self._log_event("scan_page", source="bookmarks", page_size=len(illusts), next_url=bool(page_result.get("next_url")))
-                
-                # 处理每个作品
-                for illust in illusts:
-                    stats["total"] += 1
-                    
-                    # 检查过滤条件
-                    should_download, reason = self.config.should_download_illust(illust)
-                    if not should_download:
-                        self.logger.info(f"跳过作品 {illust['id']}: {reason}")
-                        self._log_event("skip_illust", source="bookmarks", illust_id=illust["id"], reason=reason)
-                        stats["skipped"] += 1
-                        continue
-                        
-                    # 下载作品
-                    dl_result = self._download_illust(illust)
-                    if dl_result["success"]:
-                        stats["success"] += 1
-                        downloaded_count += 1
-                        self._log_event("download_result", source="bookmarks", illust_id=illust["id"], status="success")
-                    elif dl_result.get("skipped", False):
-                        stats["skipped"] += 1
-                        self._log_event("download_result", source="bookmarks", illust_id=illust["id"], status="skipped")
-                    else:
-                        stats["failed"] += 1
-                        self._log_event("download_result", source="bookmarks", illust_id=illust["id"], status="failed")
-                        err = dl_result.get("error")
-                        if err:
-                            stats["last_error"] = err
-                            if self._is_rate_limit_error(err):
-                                stats["rate_limited"] = True
-                                self._notify_progress("bookmarks", stats, f"检测到限速/服务异常: {err}")
-                                break
-
-                    self._notify_progress("bookmarks", stats)
-                        
-                    # 限制最大下载数量
-                    if max_downloads > 0 and downloaded_count >= max_downloads:
-                        self.logger.info(f"达到最大下载数量限制: {max_downloads}")
-                        stats["hit_max_downloads"] = True
-                        break
-                        
-                    # 高低速队列节奏：跳过项不等待（未发起下载请求）
-                    if not dl_result.get("skipped", False):
-                        self._queue_sleep(stats["total"])
-
-                if stats.get("rate_limited"):
-                    break
-                if stats.get("hit_max_downloads"):
-                    break
-                    
-                # 检查是否有下一页
-                next_url = page_result.get("next_url")
-                if not next_url:
-                    break
-                    
-                self.logger.info("获取下一页...")
-                
-        except Exception as e:
-            self.logger.error(f"下载收藏时发生错误: {str(e)}", exc_info=True)
-            stats["last_error"] = str(e)
-            if self._is_rate_limit_error(str(e)):
-                stats["rate_limited"] = True
-            
-        self.logger.info(f"收藏下载完成: 成功 {stats['success']}, 跳过 {stats['skipped']}, 失败 {stats['failed']}")
-        self._log_event(
-            "scan_finish",
-            source="bookmarks",
-            success=stats["success"],
-            skipped=stats["skipped"],
-            failed=stats["failed"],
-            total=stats["total"],
-            rate_limited=stats.get("rate_limited", False),
-        )
-        self._notify_progress("bookmarks", stats, "收藏同步结束")
-        return stats
-        
-    def download_following_illusts(self, user_id, max_downloads_override=None):
-        """下载关注用户的作品"""
-        self.logger.info(f"开始下载用户 {user_id} 的关注用户作品...")
-        self._log_event("scan_start", source="following", user_id=user_id)
-        
-        api = self._get_api()
-        restrict = self.config.get_restrict_mode()
-        max_downloads = self.config.get_max_downloads() if max_downloads_override is None else max_downloads_override
-        
-        stats = {
-            "success": 0,
-            "failed": 0,
-            "skipped": 0,
-            "total": 0,
-            "hit_max_downloads": False,
-            "rate_limited": False,
-            "last_error": None
-        }
-        self._notify_progress("following", stats, "开始同步关注作品")
-        
-        try:
-            # 获取关注用户列表
-            following_users = []
-            next_url = None
-            
-            while True:
-                if next_url:
-                    page_result = api.user_following(
-                        user_id=int(user_id),
                         restrict=restrict,
-                        **self._next_url_kwargs(next_url, {"user_id", "restrict"})
                     )
-                else:
-                    page_result = api.user_following(
-                        user_id=int(user_id),
-                        restrict=restrict
-                    )
-                    
-                if page_result and "user_previews" in page_result:
-                    for user_preview in page_result["user_previews"]:
-                        following_users.append(user_preview["user"]["id"])
-                        
-                next_url = page_result.get("next_url")
-                if not next_url:
-                    break
-                    
-            self.logger.info(f"获取到 {len(following_users)} 个关注用户")
-            self._log_event("following_users_loaded", user_count=len(following_users))
-            
-            # 下载每个关注用户的作品
-            downloaded_count = 0
-            
-            for follow_user_id in following_users:
-                # 获取用户的最新作品
-                result = api.user_illusts(user_id=int(follow_user_id))
-                
-                if not result or "illusts" not in result:
+            except Exception as e:
+                err = str(e)
+                stats["last_error"] = err
+                if self._is_rate_limit_error(err):
+                    stats["rate_limited"] = True
+                self._log_event("scan_error", source="bookmarks", error=err)
+                break
+
+            if not page_result or "illusts" not in page_result:
+                break
+
+            illusts = page_result.get("illusts", [])
+            self._log_event("scan_page", source="bookmarks", page_size=len(illusts), next_url=bool(page_result.get("next_url")))
+            for illust in illusts:
+                stats["scanned"] += 1
+                should_download, reason = self.config.should_download_illust(illust)
+                if not should_download:
+                    stats["filtered"] += 1
+                    self._log_event("scan_filtered", source="bookmarks", illust_id=illust.get("id"), reason=reason)
                     continue
-                    
-                illusts = result.get("illusts", [])
-                self.logger.info(f"用户 {follow_user_id} 有 {len(illusts)} 个作品")
-                self._log_event("scan_page", source="following", follow_user_id=follow_user_id, page_size=len(illusts))
-                
-                # 处理每个作品
-                for illust in illusts:
-                    stats["total"] += 1
-                    
-                    # 检查过滤条件
-                    should_download, reason = self.config.should_download_illust(illust)
-                    if not should_download:
-                        self.logger.info(f"跳过作品 {illust['id']}: {reason}")
-                        self._log_event("skip_illust", source="following", illust_id=illust["id"], reason=reason)
-                        stats["skipped"] += 1
-                        continue
-                        
-                    # 下载作品
-                    dl_result = self._download_illust(illust)
-                    if dl_result["success"]:
-                        stats["success"] += 1
-                        downloaded_count += 1
-                        self._log_event("download_result", source="following", illust_id=illust["id"], status="success")
-                    elif dl_result.get("skipped", False):
-                        stats["skipped"] += 1
-                        self._log_event("download_result", source="following", illust_id=illust["id"], status="skipped")
-                    else:
-                        stats["failed"] += 1
-                        self._log_event("download_result", source="following", illust_id=illust["id"], status="failed")
-                        err = dl_result.get("error")
-                        if err:
-                            stats["last_error"] = err
-                            if self._is_rate_limit_error(err):
-                                stats["rate_limited"] = True
-                                self._notify_progress("following", stats, f"检测到限速/服务异常: {err}")
-                                break
+                self._upsert_candidate(candidates, illust, is_bookmarked=True, is_following_author=False)
 
-                    self._notify_progress("following", stats)
-                        
-                    # 限制最大下载数量
-                    if max_downloads > 0 and downloaded_count >= max_downloads:
-                        self.logger.info(f"达到最大下载数量限制: {max_downloads}")
-                        stats["hit_max_downloads"] = True
-                        break
-                        
-                    # 高低速队列节奏：跳过项不等待（未发起下载请求）
-                    if not dl_result.get("skipped", False):
-                        self._queue_sleep(stats["total"])
+            next_url = page_result.get("next_url")
+            if not next_url:
+                break
 
-                if stats.get("rate_limited"):
+        self._log_event("scan_finish", source="bookmarks", scanned=stats["scanned"], filtered=stats["filtered"], rate_limited=stats["rate_limited"])
+        return stats
+
+    def _scan_following(self, user_id, candidates):
+        stats = {
+            "scanned": 0,
+            "filtered": 0,
+            "rate_limited": False,
+            "last_error": None,
+        }
+        api = self._get_api()
+        restrict = self.config.get_restrict_mode()
+        following_users = []
+        next_url = None
+        self._log_event("scan_start", source="following", user_id=user_id)
+
+        while True:
+            try:
+                if next_url:
+                    page_result = api.user_following(
+                        user_id=int(user_id),
+                        restrict=restrict,
+                        **self._next_url_kwargs(next_url, {"user_id", "restrict"})
+                    )
+                else:
+                    page_result = api.user_following(
+                        user_id=int(user_id),
+                        restrict=restrict,
+                    )
+            except Exception as e:
+                err = str(e)
+                stats["last_error"] = err
+                if self._is_rate_limit_error(err):
+                    stats["rate_limited"] = True
+                self._log_event("scan_error", source="following_users", error=err)
+                return stats
+
+            if page_result and "user_previews" in page_result:
+                for user_preview in page_result["user_previews"]:
+                    following_users.append(user_preview["user"]["id"])
+
+            next_url = page_result.get("next_url") if page_result else None
+            if not next_url:
+                break
+
+        self._log_event("following_users_loaded", user_count=len(following_users))
+        for follow_user_id in following_users:
+            try:
+                result = api.user_illusts(user_id=int(follow_user_id))
+            except Exception as e:
+                err = str(e)
+                stats["last_error"] = err
+                if self._is_rate_limit_error(err):
+                    stats["rate_limited"] = True
+                    self._log_event("scan_error", source="following_illusts", follow_user_id=follow_user_id, error=err)
                     break
-                    
-                # 检查是否达到限制
-                if max_downloads > 0 and downloaded_count >= max_downloads:
-                    stats["hit_max_downloads"] = True
-                    break
-                if stats.get("rate_limited"):
-                    break
-                    
-        except Exception as e:
-            self.logger.error(f"下载关注用户作品时发生错误: {str(e)}", exc_info=True)
-            stats["last_error"] = str(e)
-            if self._is_rate_limit_error(str(e)):
-                stats["rate_limited"] = True
-            
-        self.logger.info(f"关注用户作品下载完成: 成功 {stats['success']}, 跳过 {stats['skipped']}, 失败 {stats['failed']}")
+                self._log_event("scan_error", source="following_illusts", follow_user_id=follow_user_id, error=err)
+                continue
+
+            if not result or "illusts" not in result:
+                continue
+
+            illusts = result.get("illusts", [])
+            self._log_event("scan_page", source="following", follow_user_id=follow_user_id, page_size=len(illusts))
+            for illust in illusts:
+                stats["scanned"] += 1
+                should_download, reason = self.config.should_download_illust(illust)
+                if not should_download:
+                    stats["filtered"] += 1
+                    self._log_event("scan_filtered", source="following", illust_id=illust.get("id"), reason=reason)
+                    continue
+                self._upsert_candidate(candidates, illust, is_bookmarked=False, is_following_author=True)
+
+            if stats["rate_limited"]:
+                break
+
+        self._log_event("scan_finish", source="following", scanned=stats["scanned"], filtered=stats["filtered"], rate_limited=stats["rate_limited"])
+        return stats
+
+    def _merge_candidates_to_queue(self, candidates: Dict[int, dict]):
+        items = self._load_task_queue()
+        now = self._now_str()
+        by_id = {int(i.get("illust_id")): i for i in items if i.get("illust_id") is not None}
+
+        new_tasks = 0
+        reset_tasks = 0
+        skipped_downloaded = 0
+
+        for illust_id, illust in candidates.items():
+            if self.downloader.is_illust_fully_downloaded(illust):
+                skipped_downloaded += 1
+                existing = by_id.get(illust_id)
+                if existing:
+                    existing["status"] = "done"
+                    existing["updated_at"] = now
+                    existing["is_bookmarked"] = bool(illust.get("is_bookmarked", False))
+                    existing["is_following_author"] = bool(illust.get("is_following_author", False))
+                    existing["illust"] = illust
+                continue
+
+            existing = by_id.get(illust_id)
+            if not existing:
+                by_id[illust_id] = {
+                    "illust_id": illust_id,
+                    "status": "pending",
+                    "retry_count": 0,
+                    "last_error": None,
+                    "next_retry_at": None,
+                    "is_bookmarked": bool(illust.get("is_bookmarked", False)),
+                    "is_following_author": bool(illust.get("is_following_author", False)),
+                    "enqueued_at": now,
+                    "updated_at": now,
+                    "illust": illust,
+                }
+                new_tasks += 1
+                self._log_event("enqueue", illust_id=illust_id, status="new")
+                continue
+
+            prev_status = existing.get("status")
+            existing["illust"] = illust
+            existing["is_bookmarked"] = bool(illust.get("is_bookmarked", False) or existing.get("is_bookmarked", False))
+            existing["is_following_author"] = bool(illust.get("is_following_author", False) or existing.get("is_following_author", False))
+            existing["updated_at"] = now
+            if prev_status in ("done", "running"):
+                existing["status"] = "pending"
+                existing["next_retry_at"] = None
+                existing["last_error"] = None
+                reset_tasks += 1
+                self._log_event("enqueue", illust_id=illust_id, status="reset_pending", prev_status=prev_status)
+
+        merged_items = sorted(by_id.values(), key=lambda x: int(x.get("illust_id", 0)))
+        self._save_task_queue(merged_items)
+        self._log_event("queue_merged", candidates=len(candidates), new_tasks=new_tasks, reset_tasks=reset_tasks, skipped_downloaded=skipped_downloaded, queue_size=len(merged_items))
+        return {
+            "new_tasks": new_tasks,
+            "reset_tasks": reset_tasks,
+            "skipped_downloaded": skipped_downloaded,
+            "queue_size": len(merged_items),
+        }
+
+    def _is_task_ready(self, item, now):
+        status = item.get("status")
+        if status in ("pending", "running"):
+            return True
+        if status == "failed":
+            next_retry_at = self._parse_time(item.get("next_retry_at"))
+            if next_retry_at is None:
+                return True
+            return now >= next_retry_at
+        return False
+
+    def _next_retry_seconds(self, retry_count):
+        # 指数退避，最长 1 小时
+        safe_retry = max(1, int(retry_count))
+        return min(3600, 60 * (2 ** min(6, safe_retry - 1)))
+
+    def _consume_task_queue(self, max_downloads):
+        stats = {
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
+            "total": 0,
+            "hit_max_downloads": False,
+            "rate_limited": False,
+            "last_error": None,
+        }
+        items = self._load_task_queue()
+        now = datetime.now()
+        downloaded_count = 0
+
+        self._log_event("queue_consume_start", queue_size=len(items), max_downloads=max_downloads)
+        for item in items:
+            if max_downloads > 0 and downloaded_count >= max_downloads:
+                stats["hit_max_downloads"] = True
+                break
+
+            if not self._is_task_ready(item, now):
+                continue
+
+            illust = item.get("illust") or {}
+            illust_id = item.get("illust_id")
+            if not illust_id:
+                continue
+
+            illust["is_bookmarked"] = bool(item.get("is_bookmarked", False))
+            illust["is_following_author"] = bool(item.get("is_following_author", False))
+
+            if self.downloader.is_illust_fully_downloaded(illust):
+                item["status"] = "done"
+                item["updated_at"] = self._now_str()
+                stats["skipped"] += 1
+                stats["total"] += 1
+                self._log_event("dequeue", illust_id=illust_id, status="skip_already_downloaded")
+                self._save_task_queue(items)
+                self._notify_progress("download_queue", stats)
+                continue
+
+            prev_status = item.get("status")
+            item["status"] = "running"
+            item["updated_at"] = self._now_str()
+            self._save_task_queue(items)
+            self._log_event("dequeue", illust_id=illust_id, prev_status=prev_status, status="running")
+
+            dl_result = self._download_illust(illust)
+            stats["total"] += 1
+            if dl_result.get("success"):
+                item["status"] = "done"
+                item["last_error"] = None
+                item["next_retry_at"] = None
+                item["updated_at"] = self._now_str()
+                stats["success"] += 1
+                downloaded_count += 1
+                self._log_event("task_result", illust_id=illust_id, status="success")
+            elif dl_result.get("skipped", False):
+                item["status"] = "done"
+                item["last_error"] = None
+                item["next_retry_at"] = None
+                item["updated_at"] = self._now_str()
+                stats["skipped"] += 1
+                self._log_event("task_result", illust_id=illust_id, status="skipped")
+            else:
+                err = dl_result.get("error") or "未知错误"
+                retry_count = int(item.get("retry_count", 0)) + 1
+                wait_seconds = self._next_retry_seconds(retry_count)
+                next_retry_at = datetime.now() + timedelta(seconds=wait_seconds)
+
+                item["status"] = "failed"
+                item["retry_count"] = retry_count
+                item["last_error"] = err
+                item["next_retry_at"] = next_retry_at.strftime("%Y-%m-%d %H:%M:%S")
+                item["updated_at"] = self._now_str()
+
+                stats["failed"] += 1
+                stats["last_error"] = err
+                self._log_event("task_result", illust_id=illust_id, status="failed", retry_count=retry_count, next_retry_at=item["next_retry_at"], error=err)
+                if self._is_rate_limit_error(err):
+                    stats["rate_limited"] = True
+
+            self._save_task_queue(items)
+            self._notify_progress("download_queue", stats)
+
+            if stats["rate_limited"]:
+                break
+            if stats["hit_max_downloads"]:
+                break
+
+            if not dl_result.get("skipped", False):
+                self._queue_sleep(stats["total"])
+
         self._log_event(
-            "scan_finish",
-            source="following",
+            "queue_consume_finish",
             success=stats["success"],
             skipped=stats["skipped"],
             failed=stats["failed"],
             total=stats["total"],
-            rate_limited=stats.get("rate_limited", False),
+            hit_max_downloads=stats["hit_max_downloads"],
+            rate_limited=stats["rate_limited"],
         )
-        self._notify_progress("following", stats, "关注作品同步结束")
         return stats
-        
+
+    def _merge_stats(self, base, part):
+        for key in ("success", "failed", "skipped", "total"):
+            base[key] = base.get(key, 0) + int(part.get(key, 0) or 0)
+        base["hit_max_downloads"] = base.get("hit_max_downloads", False) or bool(part.get("hit_max_downloads", False))
+        base["rate_limited"] = base.get("rate_limited", False) or bool(part.get("rate_limited", False))
+        if part.get("last_error"):
+            base["last_error"] = part.get("last_error")
+
+    def sync_with_task_queue(self, user_id, download_mode, max_downloads):
+        stats = {
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
+            "total": 0,
+            "hit_max_downloads": False,
+            "rate_limited": False,
+            "last_error": None,
+        }
+        self._log_event("sync_cycle_start", user_id=user_id, download_mode=download_mode, max_downloads=max_downloads)
+        self._notify_progress("scan", stats, "开始扫描新作品")
+
+        candidates = {}
+        scan_errors = []
+
+        if download_mode in ["bookmarks", "both"]:
+            bookmark_scan = self._scan_bookmarks(user_id, candidates)
+            if bookmark_scan.get("last_error"):
+                scan_errors.append(bookmark_scan.get("last_error"))
+            if bookmark_scan.get("rate_limited"):
+                stats["rate_limited"] = True
+
+        if download_mode in ["following", "both"] and not stats.get("rate_limited"):
+            following_scan = self._scan_following(user_id, candidates)
+            if following_scan.get("last_error"):
+                scan_errors.append(following_scan.get("last_error"))
+            if following_scan.get("rate_limited"):
+                stats["rate_limited"] = True
+
+        if scan_errors:
+            stats["last_error"] = scan_errors[-1]
+
+        merge_info = self._merge_candidates_to_queue(candidates)
+        self._notify_progress(
+            "queue_build",
+            stats,
+            f"扫描完成，候选 {len(candidates)}，新增任务 {merge_info['new_tasks']}，队列 {merge_info['queue_size']}",
+        )
+
+        queue_stats = self._consume_task_queue(max_downloads)
+        self._merge_stats(stats, queue_stats)
+        self._notify_progress("done", stats, "任务队列处理完成")
+        self._log_event(
+            "sync_cycle_finish",
+            success=stats["success"],
+            skipped=stats["skipped"],
+            failed=stats["failed"],
+            total=stats["total"],
+            rate_limited=stats["rate_limited"],
+            hit_max_downloads=stats["hit_max_downloads"],
+            queue_size=merge_info.get("queue_size", 0),
+        )
+        return stats
+
     def _download_illust(self, illust):
         """下载单个作品"""
         illust_id = illust["id"]
         illust_type = illust.get("type", "illust")
-        
+
         self.logger.info(f"下载作品 {illust_id}: {illust['title']}")
         self._log_event("download_start", illust_id=illust_id, illust_type=illust_type, title=illust.get("title", ""))
-        
+
         try:
             # 保存到数据库
             self.database.save_illust(illust)
-            
-            # 检查是否已下载
-            if self.database.is_downloaded(illust_id):
-                self.logger.info(f"作品 {illust_id} 已下载，跳过")
-                self._log_event("download_skip", illust_id=illust_id, reason="database_downloaded")
-                return {"success": False, "skipped": True, "message": "已存在"}
-                
+
             # 根据类型下载
             if illust_type == "ugoira":
                 # 动图需要特殊处理
                 api = self._get_api()
                 ugoira_info = api.ugoira_metadata(illust_id)
-                
+
                 if ugoira_info and "ugoira_metadata" in ugoira_info:
                     result = self.downloader.download_ugoira(illust, ugoira_info["ugoira_metadata"])
                 else:
@@ -411,7 +568,7 @@ class PixivCrawler:
             else:
                 # 静态图片：优先下载原图，支持多图逐页下载
                 result = self._download_illust_images(illust)
-                
+
             # 处理下载结果
             if result["success"]:
                 # 标记为已下载
@@ -427,9 +584,9 @@ class PixivCrawler:
                 if result.get("error"):
                     result["error"] = self._with_illust_context(illust_id, result.get("error"))
                 self._log_event("download_finish", illust_id=illust_id, status="failed", error=result.get("error", "unknown"))
-                
+
             return result
-            
+
         except Exception as e:
             error_msg = self._with_illust_context(illust_id, f"下载失败: {str(e)}")
             self.logger.error(f"作品 {illust_id} {error_msg}")
@@ -453,8 +610,9 @@ class PixivCrawler:
                     continue
 
                 r = self.downloader.download_image(image_url, illust, page_index=idx)
-                if not r.get("success"):
+                if not r.get("success") and not r.get("skipped", False):
                     return r
+
                 downloaded += 1
                 total_size += r.get("file_size", 0) or 0
                 if not first_path:
@@ -477,13 +635,16 @@ class PixivCrawler:
         if not image_url:
             return {"success": False, "error": "未找到可下载图片链接"}
 
-        return self.downloader.download_image(image_url, illust)
-            
+        result = self.downloader.download_image(image_url, illust)
+        if result.get("skipped", False):
+            return {"success": True, "file_path": result.get("file_path", ""), "file_size": result.get("file_size", 0), "message": "已存在"}
+        return result
+
     def test_connection(self):
         """测试连接"""
         try:
             api = self._get_api()
-            
+
             # 测试获取用户信息
             user_id = self.config.get_user_id()
             if user_id:
@@ -494,8 +655,8 @@ class PixivCrawler:
                         "user_name": user_info["user"]["name"],
                         "account": user_info["user"]["account"]
                     }
-                    
+
             return {"success": True, "message": "连接成功"}
-            
+
         except Exception as e:
             return {"success": False, "error": str(e)}
