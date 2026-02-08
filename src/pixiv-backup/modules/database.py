@@ -405,3 +405,48 @@ class DatabaseManager:
                 conn.close()
 
         return self._execute_with_recovery(_op, default=0)
+
+    def get_unresolved_errors(self, limit=50):
+        """获取未处理错误（每个作品仅最新一条失败且未下载）"""
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT
+                        dh.illust_id,
+                        COALESCE(i.title, '') AS title,
+                        dh.error_message,
+                        dh.download_time,
+                        COALESCE(i.downloaded, 0) AS downloaded
+                    FROM download_history dh
+                    JOIN (
+                        SELECT illust_id, MAX(id) AS max_id
+                        FROM download_history
+                        GROUP BY illust_id
+                    ) latest ON latest.max_id = dh.id
+                    LEFT JOIN illusts i ON i.illust_id = dh.illust_id
+                    WHERE dh.success = 0
+                      AND COALESCE(i.downloaded, 0) = 0
+                    ORDER BY dh.id DESC
+                    LIMIT ?
+                    ''',
+                    (int(limit),),
+                )
+                rows = cursor.fetchall()
+                return [
+                    {
+                        "illust_id": row[0],
+                        "title": row[1] or "",
+                        "error_message": row[2] or "",
+                        "download_time": row[3] or "",
+                        "downloaded": bool(row[4]),
+                    }
+                    for row in rows
+                ]
+            finally:
+                conn.close()
+
+        return self._execute_with_recovery(_op, default=[])

@@ -185,6 +185,20 @@ pixiv-backup log --syslog
 - `--file` 与 `--syslog` 不能同时使用，同时指定会报参数错误并退出。
 - 未指定来源参数时会自动选择：优先文件日志，缺失时回退到 `logread`。
 
+### 查看未处理报错
+```bash
+# 查看最新50条未处理报错（默认）
+pixiv-backup errors
+
+# 仅看最近20条
+pixiv-backup errors -n 20
+
+# JSON输出（便于脚本处理）
+pixiv-backup errors --json
+```
+说明：
+- “未处理”口径：按每个作品最新失败记录判断，且当前 `illusts.downloaded=0`。
+
 ### 守护进程模式
 ```bash
 pixiv-backup --daemon

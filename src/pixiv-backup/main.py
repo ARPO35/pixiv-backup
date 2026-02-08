@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import time
+import re
 import logging
 import sqlite3
 import argparse
@@ -420,6 +421,9 @@ def main():
 
     subparsers.add_parser("test", help="执行服务测试（透传 init.d test）")
     subparsers.add_parser("trigger", help="跳过冷却并立即触发下一轮扫描")
+    errors_parser = subparsers.add_parser("errors", help="查看未处理报错")
+    errors_parser.add_argument("-n", "--limit", type=int, default=50, help="输出条数上限（默认: 50）")
+    errors_parser.add_argument("--json", action="store_true", help="以 JSON 格式输出")
 
     args = parser.parse_args()
     _emit_cli_audit(
@@ -481,6 +485,11 @@ def main():
     if args.command == "trigger":
         ret = _trigger_immediate_scan("cli_trigger")
         _emit_cli_audit(_event_line("cli_command_result", command="trigger", status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        return ret
+
+    if args.command == "errors":
+        ret = handle_errors_command(args)
+        _emit_cli_audit(_event_line("cli_command_result", command="errors", status="ok" if ret == EXIT_OK else "error", exit_code=ret))
         return ret
 
     if args.command == "run":
@@ -749,6 +758,126 @@ def handle_log_command(args):
     print("无可用日志来源: 文件日志不存在且系统不支持 logread", file=sys.stderr)
     _emit_cli_audit(_event_line("log_command", status="error", source="auto", reason="no_available_source"))
     return EXIT_ERROR
+
+
+def _extract_http_status_from_error(error_msg):
+    msg = str(error_msg or "")
+    patterns = [
+        r"status\s*[:=]?\s*(\d{3})",
+        r"http\s*[:=]?\s*(\d{3})",
+        r"\b(\d{3})\s+(?:client|server)\s+error\b",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, msg, flags=re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                return None
+    return None
+
+
+def _classify_error_for_report(error_msg):
+    msg = (error_msg or "").lower()
+    http_status = _extract_http_status_from_error(msg)
+    invalid_keywords = [
+        "illust not found",
+        "not found",
+        "deleted",
+        "private",
+        "作品不存在",
+        "已删除",
+        "无权限查看",
+        "not visible",
+    ]
+    network_keywords = [
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection aborted",
+        "network is unreachable",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "dns",
+        "proxyerror",
+        "ssl",
+    ]
+    auth_keywords = [
+        "unauthorized",
+        "invalid_grant",
+        "invalid token",
+        "authentication",
+        "token",
+        "refresh token",
+    ]
+
+    if http_status in (404, 410):
+        return "invalid", http_status
+    if http_status == 429:
+        return "rate_limit", http_status
+    if http_status == 401:
+        return "auth", http_status
+    if http_status in (500, 502, 503, 504):
+        return "rate_limit", http_status
+    if http_status == 403:
+        if any(k in msg for k in invalid_keywords):
+            return "invalid", http_status
+        return "rate_limit", http_status
+
+    if any(k in msg for k in invalid_keywords):
+        return "invalid", http_status
+    if any(k in msg for k in network_keywords):
+        return "network", http_status
+    if any(k in msg for k in auth_keywords):
+        return "auth", http_status
+    if any(k in msg for k in ("rate limit", "too many requests")):
+        return "rate_limit", http_status
+    return "unknown", http_status
+
+
+def handle_errors_command(args):
+    if args.limit <= 0:
+        print("参数错误: --limit 必须大于 0", file=sys.stderr)
+        return EXIT_USAGE
+
+    config = ConfigManager()
+    database = DatabaseManager(config)
+    records = database.get_unresolved_errors(limit=args.limit)
+
+    payload = []
+    for row in records:
+        illust_id = row.get("illust_id")
+        err = row.get("error_message", "")
+        category, http_status = _classify_error_for_report(err)
+        payload.append({
+            "illust_id": illust_id,
+            "title": row.get("title", ""),
+            "url": f"https://www.pixiv.net/artworks/{illust_id}",
+            "error_message": err,
+            "error_category": category,
+            "http_status": http_status,
+            "download_time": row.get("download_time", ""),
+        })
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return EXIT_OK
+
+    if not payload:
+        print("未发现未处理报错。")
+        return EXIT_OK
+
+    print(f"未处理报错: {len(payload)} 条")
+    for idx, item in enumerate(payload, start=1):
+        print(
+            f"[{idx}] pid={item['illust_id']} time={item['download_time'] or '-'} "
+            f"category={item['error_category']} http={item['http_status'] if item['http_status'] is not None else '-'}"
+        )
+        if item.get("title"):
+            print(f"  title={item['title']}")
+        print(f"  url={item['url']}")
+        print(f"  error={item['error_message']}")
+    return EXIT_OK
 
 
 def _is_interactive_tty():
