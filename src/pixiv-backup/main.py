@@ -47,6 +47,7 @@ class PixivBackupService:
         """初始化备份服务"""
         self.config = ConfigManager()
         self.stop_requested = False
+        self._run_total_base = self._safe_int(self._read_runtime_status().get("total_processed_all", 0), 0)
         self.logger = self._setup_logging()
         
         # 验证必要配置
@@ -74,6 +75,8 @@ class PixivBackupService:
             "phase": "init",
             "message": "服务已初始化",
             "processed_total": 0,
+            "last_run_processed_total": 0,
+            "total_processed_all": self._run_total_base,
             "success": 0,
             "skipped": 0,
             "failed": 0
@@ -167,8 +170,23 @@ class PixivBackupService:
         except Exception as e:
             self.logger.warning(f"写入运行状态失败: {e}")
 
+    def _safe_int(self, value, default=0):
+        try:
+            return int(value)
+        except Exception:
+            return default
+
     def _on_progress(self, payload):
-        self._write_runtime_status(payload)
+        if not isinstance(payload, dict):
+            return
+        patch = dict(payload)
+        if "processed_total" in patch:
+            run_processed = self._safe_int(patch.get("processed_total"), 0)
+            if run_processed < 0:
+                run_processed = 0
+            patch["last_run_processed_total"] = run_processed
+            patch["total_processed_all"] = self._safe_int(self._run_total_base, 0) + run_processed
+        self._write_runtime_status(patch)
 
     def request_stop(self, reason="external_stop"):
         if self.stop_requested:
@@ -241,11 +259,14 @@ class PixivBackupService:
             })
             return {"success": False, "stats": {}, "hit_max_downloads": False, "rate_limited": False, "last_error": "stop_requested"}
         self.logger.info("开始Pixiv备份服务")
+        self._run_total_base = self._safe_int(self._read_runtime_status().get("total_processed_all", 0), 0)
         self._write_runtime_status({
             "state": "syncing",
             "phase": "start",
             "message": "开始同步",
             "processed_total": 0,
+            "last_run_processed_total": 0,
+            "total_processed_all": self._run_total_base,
             "success": 0,
             "skipped": 0,
             "failed": 0,
@@ -291,11 +312,13 @@ class PixivBackupService:
             self.logger.info(f"失败: {stats.get('failed', 0)} 个作品")
             self.logger.info(f"总计处理: {stats.get('total', 0)} 个作品")
             self.logger.info("=" * 50)
+            run_processed_total = self._safe_int(stats.get("total", 0), 0)
+            total_processed_all = self._safe_int(self._run_total_base, 0) + run_processed_total
             self._write_runtime_status({
                 "state": "idle",
                 "phase": "done",
                 "message": "同步完成",
-                "processed_total": stats.get("total", 0),
+                "processed_total": run_processed_total,
                 "success": stats.get("success", 0),
                 "skipped": stats.get("skipped", 0),
                 "failed": stats.get("failed", 0),
@@ -309,9 +332,10 @@ class PixivBackupService:
                 "queue_failed": stats.get("queue_failed", 0),
                 "queue_done": stats.get("queue_done", 0),
                 "queue_permanent_failed": stats.get("queue_permanent_failed", 0),
-                "last_run_processed_total": stats.get("total", 0),
-                "total_processed_all": int(self._read_runtime_status().get("total_processed_all", 0) or 0) + int(stats.get("total", 0) or 0),
+                "last_run_processed_total": run_processed_total,
+                "total_processed_all": total_processed_all,
             })
+            self._run_total_base = total_processed_all
             
             # 保存运行记录
             self._save_run_record(stats, elapsed_time)
