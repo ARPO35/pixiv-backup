@@ -144,6 +144,9 @@ pixiv-backup test
 ### 手动运行备份
 ```bash
 pixiv-backup run 20
+
+# 强制全量扫描（跳过增量停止逻辑）
+pixiv-backup run 20 --full-scan
 ```
 说明：`run` 模式必须指定本次下载数量。
 

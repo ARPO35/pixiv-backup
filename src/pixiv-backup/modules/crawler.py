@@ -11,6 +11,7 @@ from typing import Dict
 class PixivCrawler:
     MAX_ATTEMPTS_PER_ROUND = 3
     INVALID_FAILED_ROUNDS_LIMIT = 2
+    BOOKMARK_EXISTING_STREAK_STOP = 10
 
     def __init__(self, config, auth_manager, database, downloader, progress_callback=None, stop_checker=None):
         """初始化爬虫"""
@@ -238,17 +239,28 @@ class PixivCrawler:
         item["is_bookmarked"] = bool(item.get("is_bookmarked", False) or is_bookmarked)
         item["is_following_author"] = bool(item.get("is_following_author", False) or is_following_author)
 
-    def _scan_bookmarks(self, user_id, candidates):
+    def _scan_bookmarks(self, user_id, candidates, full_scan=False):
         stats = {
             "scanned": 0,
             "filtered": 0,
             "rate_limited": False,
             "last_error": None,
+            "incremental_stopped": False,
         }
         api = self._get_api()
         restrict = self.config.get_restrict_mode()
         next_url = None
+        existing_streak = 0
+        done_like_ids = set()
+        if not full_scan:
+            for item in self._load_task_queue():
+                try:
+                    if item.get("status") in ("done", "permanent_failed"):
+                        done_like_ids.add(int(item.get("illust_id")))
+                except Exception:
+                    continue
         self._log_event("scan_start", source="bookmarks", user_id=user_id)
+        stop_scan = False
         while True:
             if self._should_stop():
                 stats["stop_requested"] = True
@@ -290,8 +302,37 @@ class PixivCrawler:
                     stats["filtered"] += 1
                     self._log_event("scan_filtered", source="bookmarks", illust_id=illust.get("id"), reason=reason)
                     continue
+
+                if not full_scan:
+                    illust_id = int(illust.get("id"))
+                    is_existing = (illust_id in done_like_ids) or self.downloader.is_illust_fully_downloaded(illust)
+                    if is_existing:
+                        existing_streak += 1
+                        self._log_event(
+                            "scan_incremental_hit",
+                            source="bookmarks",
+                            illust_id=illust_id,
+                            streak=existing_streak,
+                            threshold=self.BOOKMARK_EXISTING_STREAK_STOP,
+                        )
+                        if existing_streak >= self.BOOKMARK_EXISTING_STREAK_STOP:
+                            stats["incremental_stopped"] = True
+                            self._log_event(
+                                "scan_incremental_stop",
+                                source="bookmarks",
+                                streak=existing_streak,
+                                threshold=self.BOOKMARK_EXISTING_STREAK_STOP,
+                                illust_id=illust_id,
+                            )
+                            stop_scan = True
+                            break
+                        continue
+                    existing_streak = 0
+
                 self._upsert_candidate(candidates, illust, is_bookmarked=True, is_following_author=False)
 
+            if stop_scan:
+                break
             next_url = page_result.get("next_url")
             if not next_url:
                 break
@@ -414,7 +455,7 @@ class PixivCrawler:
 
             existing = by_id.get(illust_id)
             if not existing:
-                by_id[illust_id] = {
+                new_item = {
                     "illust_id": illust_id,
                     "status": "pending",
                     "retry_count": 0,
@@ -429,6 +470,8 @@ class PixivCrawler:
                     "updated_at": now,
                     "illust": illust,
                 }
+                by_id[illust_id] = new_item
+                items.append(new_item)
                 new_tasks += 1
                 self._log_event("enqueue", illust_id=illust_id, status="new")
                 continue
@@ -448,14 +491,13 @@ class PixivCrawler:
                 reset_tasks += 1
                 self._log_event("enqueue", illust_id=illust_id, status="reset_pending", prev_status=prev_status)
 
-        merged_items = sorted(by_id.values(), key=lambda x: int(x.get("illust_id", 0)))
-        self._save_task_queue(merged_items)
-        self._log_event("queue_merged", candidates=len(candidates), new_tasks=new_tasks, reset_tasks=reset_tasks, skipped_downloaded=skipped_downloaded, queue_size=len(merged_items))
+        self._save_task_queue(items)
+        self._log_event("queue_merged", candidates=len(candidates), new_tasks=new_tasks, reset_tasks=reset_tasks, skipped_downloaded=skipped_downloaded, queue_size=len(items))
         return {
             "new_tasks": new_tasks,
             "reset_tasks": reset_tasks,
             "skipped_downloaded": skipped_downloaded,
-            "queue_size": len(merged_items),
+            "queue_size": len(items),
         }
 
     def _is_task_ready(self, item, now):
@@ -743,7 +785,7 @@ class PixivCrawler:
         if part.get("last_error"):
             base["last_error"] = part.get("last_error")
 
-    def sync_with_task_queue(self, user_id, download_mode, max_downloads):
+    def sync_with_task_queue(self, user_id, download_mode, max_downloads, full_scan=False):
         stats = {
             "success": 0,
             "failed": 0,
@@ -754,14 +796,14 @@ class PixivCrawler:
             "last_error": None,
             "stop_requested": False,
         }
-        self._log_event("sync_cycle_start", user_id=user_id, download_mode=download_mode, max_downloads=max_downloads)
+        self._log_event("sync_cycle_start", user_id=user_id, download_mode=download_mode, max_downloads=max_downloads, full_scan=bool(full_scan))
         self._notify_progress("scan", stats, "开始扫描新作品")
 
         candidates = {}
         scan_errors = []
 
         if download_mode in ["bookmarks", "both"]:
-            bookmark_scan = self._scan_bookmarks(user_id, candidates)
+            bookmark_scan = self._scan_bookmarks(user_id, candidates, full_scan=full_scan)
             if bookmark_scan.get("last_error"):
                 scan_errors.append(bookmark_scan.get("last_error"))
             if bookmark_scan.get("rate_limited"):

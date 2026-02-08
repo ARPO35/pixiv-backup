@@ -229,7 +229,7 @@ class PixivBackupService:
             base["last_error"] = part.get("last_error")
         return base
             
-    def run(self, max_download_limit=None):
+    def run(self, max_download_limit=None, full_scan=False):
         """运行备份服务"""
         if self.is_stop_requested():
             self._write_runtime_status({
@@ -269,7 +269,7 @@ class PixivBackupService:
             download_mode = self.config.get_download_mode()
             user_id = self.config.get_user_id()
             max_per_sync = self.config.get_max_downloads() if max_download_limit is None else int(max_download_limit)
-            stats = self.crawler.sync_with_task_queue(user_id, download_mode, max_per_sync)
+            stats = self.crawler.sync_with_task_queue(user_id, download_mode, max_per_sync, full_scan=bool(full_scan))
             if stats.get("rate_limited"):
                 self.logger.warning("检测到限速/服务异常，结束本轮同步")
             elif stats.get("hit_max_downloads"):
@@ -399,6 +399,7 @@ def main():
 
     run_parser = subparsers.add_parser("run", help="单次运行模式")
     run_parser.add_argument("count", type=int, help="run 模式单次下载数量")
+    run_parser.add_argument("--full-scan", action="store_true", help="本次强制全量扫描（跳过增量停止）")
 
     subparsers.add_parser("status", help="查看当前状态")
 
@@ -500,9 +501,9 @@ def main():
             _emit_cli_audit(_event_line("cli_command_result", command="run", status="usage_error", exit_code=EXIT_USAGE))
             return EXIT_USAGE
         service = PixivBackupService()
-        result = service.run(max_download_limit=args.count)
+        result = service.run(max_download_limit=args.count, full_scan=bool(args.full_scan))
         ret = EXIT_OK if result.get("success") else EXIT_ERROR
-        _emit_cli_audit(_event_line("cli_command_result", command="run", count=args.count, status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        _emit_cli_audit(_event_line("cli_command_result", command="run", count=args.count, full_scan=bool(args.full_scan), status="ok" if ret == EXIT_OK else "error", exit_code=ret))
         return ret
 
     parser.print_help()
