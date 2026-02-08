@@ -386,14 +386,15 @@ def main():
     repair_parser.add_argument("-y", "--yes", action="store_true", help="自动确认修复")
 
     start_parser = subparsers.add_parser("start", help="启动后台服务")
-    start_parser.add_argument("--force-run", action="store_true", help="启动前写入 force_run.flag 以立即触发新一轮")
+    start_parser.add_argument("--force-run", action="store_true", help="启动并立即触发下一轮扫描（等价于 start + trigger）")
 
     subparsers.add_parser("stop", help="停止后台服务")
 
     restart_parser = subparsers.add_parser("restart", help="重启后台服务")
-    restart_parser.add_argument("--force-run", action="store_true", help="重启前写入 force_run.flag 以立即触发新一轮")
+    restart_parser.add_argument("--force-run", action="store_true", help="重启并立即触发下一轮扫描（等价于 restart + trigger）")
 
     subparsers.add_parser("test", help="执行服务测试（透传 init.d test）")
+    subparsers.add_parser("trigger", help="跳过冷却并立即触发下一轮扫描")
 
     args = parser.parse_args()
     _emit_cli_audit(
@@ -425,10 +426,11 @@ def main():
         return ret
 
     if args.command == "start":
-        if args.force_run:
-            if not _touch_force_run_flag():
-                print("警告: force_run.flag 写入失败，可能无法立即跳过冷却", file=sys.stderr)
         ret = _run_initd_command("start")
+        if args.force_run:
+            trigger_ret = _trigger_immediate_scan("cli_start_force_run")
+            if ret == EXIT_OK:
+                ret = trigger_ret
         _emit_cli_audit(_event_line("cli_command_result", command="start", force_run=bool(args.force_run), status="ok" if ret == EXIT_OK else "error", exit_code=ret))
         return ret
 
@@ -438,16 +440,22 @@ def main():
         return ret
 
     if args.command == "restart":
-        if args.force_run:
-            if not _touch_force_run_flag():
-                print("警告: force_run.flag 写入失败，可能无法立即跳过冷却", file=sys.stderr)
         ret = _run_initd_command("restart")
+        if args.force_run:
+            trigger_ret = _trigger_immediate_scan("cli_restart_force_run")
+            if ret == EXIT_OK:
+                ret = trigger_ret
         _emit_cli_audit(_event_line("cli_command_result", command="restart", force_run=bool(args.force_run), status="ok" if ret == EXIT_OK else "error", exit_code=ret))
         return ret
 
     if args.command == "test":
         ret = _run_initd_command("test")
         _emit_cli_audit(_event_line("cli_command_result", command="test", status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        return ret
+
+    if args.command == "trigger":
+        ret = _trigger_immediate_scan("cli_trigger")
+        _emit_cli_audit(_event_line("cli_command_result", command="trigger", status="ok" if ret == EXIT_OK else "error", exit_code=ret))
         return ret
 
     if args.command == "run":
@@ -983,12 +991,6 @@ def _resolve_force_run_output_dirs():
     _add(_read_uci_value("pixiv-backup.settings.output_dir"))
     _add(_read_uci_value("pixiv-backup.main.output_dir"))
 
-    try:
-        config = ConfigManager()
-        _add(config.get_output_dir())
-    except Exception:
-        pass
-
     _add("/mnt/sda1/pixiv-backup")
     return candidates
 
@@ -1055,6 +1057,63 @@ def _touch_force_run_flag():
         print(f"- {err}", file=sys.stderr)
     _emit_cli_audit(f"event=force_run_flag status=error detail={';'.join(errors)}")
     return False
+
+
+def _is_service_running():
+    initd = Path(INITD_PATH)
+    if not initd.exists():
+        return False
+    result = subprocess.run([str(initd), "running"], capture_output=True, text=True, check=False)
+    return result.returncode == 0
+
+
+def _write_runtime_status_patch(output_dir, patch):
+    status_file = Path(output_dir) / "data" / "status.json"
+    current = {}
+    if status_file.exists():
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                current = json.load(f)
+        except Exception:
+            current = {}
+    current.update(patch)
+    current["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(status_file, "w", encoding="utf-8") as f:
+        json.dump(current, f, ensure_ascii=False, indent=2)
+
+
+def _record_trigger_status(source, status, detail):
+    patch = {
+        "last_trigger_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_trigger_source": source,
+        "last_trigger_status": status,
+        "last_trigger_detail": detail,
+    }
+    for output_dir in _resolve_force_run_output_dirs():
+        try:
+            _write_runtime_status_patch(output_dir, patch)
+        except Exception:
+            pass
+
+
+def _trigger_immediate_scan(source):
+    running = _is_service_running()
+    ok = _touch_force_run_flag()
+    if ok:
+        detail = "service_running" if running else "service_not_running"
+        _record_trigger_status(source, "ok", detail)
+        _emit_cli_audit(_event_line("trigger_request", source=source, status="ok", service_running=running))
+        if running:
+            print("已触发立即扫描请求（服务运行中，等待将被中断）")
+        else:
+            print("已写入触发标志（服务当前未运行，启动后将生效）")
+        return EXIT_OK
+
+    _record_trigger_status(source, "error", "flag_write_failed")
+    _emit_cli_audit(_event_line("trigger_request", source=source, status="error"))
+    print("触发立即扫描失败：无法写入 force_run.flag", file=sys.stderr)
+    return EXIT_ERROR
 
 if __name__ == "__main__":
     sys.exit(main())
