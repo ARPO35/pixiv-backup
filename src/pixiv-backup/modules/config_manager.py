@@ -166,6 +166,14 @@ class ConfigManager:
             return value if value >= 0 else 1.5
         except:
             return 1.5
+
+    def get_interval_jitter_ms(self):
+        """获取巡检/冷却随机偏移毫秒（仅增加不减少）"""
+        try:
+            value = int(self.get(self.main_section, "interval_jitter_ms", "1000"))
+            return value if value >= 0 else 1000
+        except:
+            return 1000
         
     def get_image_dir(self):
         """获取图片目录"""

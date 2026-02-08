@@ -12,6 +12,7 @@ import sqlite3
 import argparse
 import shutil
 import subprocess
+import random
 from pathlib import Path
 from collections import deque
 from datetime import datetime, timedelta
@@ -37,6 +38,7 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 LOG_PATTERN = "pixiv-backup-*.log"
 INITD_PATH = "/etc/init.d/pixiv-backup"
+DEFAULT_INTERVAL_JITTER_MS = 1000
 
 class PixivBackupService:
     def __init__(self):
@@ -412,7 +414,8 @@ def main():
 
     if args.command == "start":
         if args.force_run:
-            _touch_force_run_flag()
+            if not _touch_force_run_flag():
+                print("警告: force_run.flag 写入失败，可能无法立即跳过冷却", file=sys.stderr)
         return _run_initd_command("start")
 
     if args.command == "stop":
@@ -420,7 +423,8 @@ def main():
 
     if args.command == "restart":
         if args.force_run:
-            _touch_force_run_flag()
+            if not _touch_force_run_flag():
+                print("警告: force_run.flag 写入失败，可能无法立即跳过冷却", file=sys.stderr)
         return _run_initd_command("restart")
 
     if args.command == "test":
@@ -443,21 +447,24 @@ def _run_daemon_loop(service):
     sync_interval_minutes = service.config.get_sync_interval_minutes()
     cooldown_limit_minutes = service.config.get_cooldown_after_limit_minutes()
     cooldown_error_minutes = service.config.get_cooldown_after_error_minutes()
+    interval_jitter_ms = service.config.get_interval_jitter_ms()
 
     while True:
         result = service.run(max_download_limit=service.config.get_max_downloads())
         now = datetime.now()
 
         if result.get("rate_limited"):
-            wait_seconds = cooldown_error_minutes * 60
+            base_wait_seconds = cooldown_error_minutes * 60
             reason = "rate_limit_or_server_error"
         elif result.get("hit_max_downloads"):
-            wait_seconds = cooldown_limit_minutes * 60
+            base_wait_seconds = cooldown_limit_minutes * 60
             reason = "hit_max_downloads"
         else:
-            wait_seconds = sync_interval_minutes * 60
+            base_wait_seconds = sync_interval_minutes * 60
             reason = "normal_interval"
 
+        jitter_seconds = _random_non_negative_jitter_seconds(interval_jitter_ms)
+        wait_seconds = base_wait_seconds + jitter_seconds
         next_run = now + timedelta(seconds=wait_seconds)
         service._write_runtime_status({
             "state": "cooldown",
@@ -465,8 +472,14 @@ def _run_daemon_loop(service):
             "cooldown_reason": reason,
             "next_run_at": next_run.strftime("%Y-%m-%d %H:%M:%S"),
             "cooldown_seconds": wait_seconds,
+            "base_cooldown_seconds": base_wait_seconds,
+            "cooldown_jitter_ms": int(jitter_seconds * 1000),
         })
-        service.logger.info(f"进入冷却({reason})，下次巡检时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+        service.logger.info(
+            f"进入冷却({reason})，基础等待 {base_wait_seconds}s，"
+            f"随机偏移 +{int(jitter_seconds * 1000)}ms，"
+            f"下次巡检时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
         service.wait_with_force_run(wait_seconds)
 
 
@@ -870,14 +883,102 @@ def _run_initd_command(action):
     return EXIT_OK if result.returncode == 0 else EXIT_ERROR
 
 
-def _touch_force_run_flag():
+def _random_non_negative_jitter_seconds(max_jitter_ms):
+    try:
+        jitter_ms = int(max_jitter_ms)
+    except Exception:
+        jitter_ms = DEFAULT_INTERVAL_JITTER_MS
+    if jitter_ms < 0:
+        jitter_ms = 0
+    if jitter_ms == 0:
+        return 0.0
+    return random.randint(0, jitter_ms) / 1000.0
+
+
+def _read_uci_value(key):
+    for cmd in ("/sbin/uci", "/bin/uci", "uci"):
+        try:
+            result = subprocess.run(
+                [cmd, "-q", "get", key],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except Exception:
+            continue
+        if result.returncode == 0:
+            value = (result.stdout or "").strip()
+            if value:
+                return value
+    return None
+
+
+def _resolve_force_run_output_dirs():
+    candidates = []
+    seen = set()
+
+    def _add(path_like):
+        if not path_like:
+            return
+        p = Path(str(path_like))
+        key = str(p)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(p)
+
+    # 优先直接读取 UCI，避免某些环境下 ConfigManager 解析失败时写错目录
+    _add(_read_uci_value("pixiv-backup.settings.output_dir"))
+    _add(_read_uci_value("pixiv-backup.main.output_dir"))
+
     try:
         config = ConfigManager()
-        flag_file = Path(config.get_output_dir()) / "data" / "force_run.flag"
-        flag_file.parent.mkdir(parents=True, exist_ok=True)
-        flag_file.touch()
-    except Exception as e:
-        print(f"写入 force_run.flag 失败: {e}", file=sys.stderr)
+        _add(config.get_output_dir())
+    except Exception:
+        pass
+
+    _add("/mnt/sda1/pixiv-backup")
+    return candidates
+
+
+def _emit_cli_audit(message):
+    try:
+        if shutil.which("logger"):
+            subprocess.run(["logger", "-t", "pixiv-backup.cli", message], check=False)
+    except Exception:
+        pass
+
+
+def _touch_force_run_flag():
+    success_paths = []
+    errors = []
+    output_dirs = _resolve_force_run_output_dirs()
+
+    if not output_dirs:
+        print("写入 force_run.flag 失败: 未找到可用输出目录", file=sys.stderr)
+        _emit_cli_audit("event=force_run_flag status=error reason=no_output_dir")
+        return False
+
+    for output_dir in output_dirs:
+        flag_file = Path(output_dir) / "data" / "force_run.flag"
+        try:
+            flag_file.parent.mkdir(parents=True, exist_ok=True)
+            flag_file.touch()
+            success_paths.append(str(flag_file))
+        except Exception as e:
+            errors.append(f"{flag_file}: {e}")
+
+    if success_paths:
+        for p in success_paths:
+            print(f"已写入 force_run.flag: {p}")
+        _emit_cli_audit(f"event=force_run_flag status=ok paths={';'.join(success_paths)}")
+        return True
+
+    print("写入 force_run.flag 失败:", file=sys.stderr)
+    for err in errors:
+        print(f"- {err}", file=sys.stderr)
+    _emit_cli_audit(f"event=force_run_flag status=error detail={';'.join(errors)}")
+    return False
 
 if __name__ == "__main__":
     sys.exit(main())

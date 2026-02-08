@@ -93,7 +93,7 @@ opkg install bin/packages/*/luci-app-pixiv-backup*.ipk
    - **Refresh Token**: 上一步获取的refresh_token
    - **输出目录**: 保存图片的目录（默认 /mnt/sda1/pixiv-backup）
    - **下载模式**: 选择要下载的内容（收藏/关注/两者）
-   - **巡检与冷却参数**: 巡检间隔、冷却时间、高低速队列
+   - **巡检与冷却参数**: 巡检间隔、冷却时间、间隔随机偏移（毫秒）、高低速队列
 
 4. 点击"保存&应用"
 
@@ -253,6 +253,9 @@ pixiv-backup --daemon
 ```bash
 cat /usr/share/doc/pixiv-backup/refresh-token.md
 ```
+
+### 前端读取规范
+- 备份目录与 metadata 格式详见：[`docs/frontend-data-spec.md`](docs/frontend-data-spec.md)
 
 ## 故障排除
 
