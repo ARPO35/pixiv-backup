@@ -307,6 +307,7 @@ class PixivBackupService:
                 "queue_running": stats.get("queue_running", 0),
                 "queue_failed": stats.get("queue_failed", 0),
                 "queue_done": stats.get("queue_done", 0),
+                "queue_permanent_failed": stats.get("queue_permanent_failed", 0),
             })
             
             # 保存运行记录

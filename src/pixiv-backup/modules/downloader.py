@@ -46,6 +46,15 @@ class DownloadManager:
 
     def _ensure_parent_dir(self, file_path):
         file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _extract_request_http_status(self, exc):
+        try:
+            response = getattr(exc, "response", None)
+            if response is not None:
+                return int(response.status_code)
+        except Exception:
+            return None
+        return None
         
     def download_image(self, url, illust_info, page_index=None):
         """下载图片"""
@@ -102,18 +111,19 @@ class DownloadManager:
         except requests.exceptions.Timeout:
             err = f"page_index={page_index if page_index is not None else 0} image_url={url} 下载超时"
             self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=err)
-            return {"success": False, "error": err}
+            return {"success": False, "error": err, "http_status": None}
         except requests.exceptions.RequestException as e:
+            http_status = self._extract_request_http_status(e)
             err = f"page_index={page_index if page_index is not None else 0} image_url={url} 网络错误: {str(e)}"
-            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=err)
-            return {"success": False, "error": err}
+            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", http_status=http_status if http_status is not None else "-", error=err)
+            return {"success": False, "error": err, "http_status": http_status}
         except Exception as e:
             if str(e) == "stop_requested":
                 self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="stopped", error="stop_requested")
                 return {"success": False, "stopped": True, "error": "stop_requested"}
             err = f"page_index={page_index if page_index is not None else 0} image_url={url} 下载失败: {str(e)}"
             self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=err)
-            return {"success": False, "error": err}
+            return {"success": False, "error": err, "http_status": None}
             
     def _is_already_downloaded(self, illust_id):
         """检查是否已下载"""
@@ -316,8 +326,9 @@ class DownloadManager:
             if str(e) == "stop_requested":
                 self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index="-", status="stopped", error="stop_requested")
                 return {"success": False, "stopped": True, "error": "stop_requested"}
-            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index="-", status="failed", error=f"动图下载失败: {str(e)}")
-            return {"success": False, "error": f"动图下载失败: {str(e)}"}
+            http_status = self._extract_request_http_status(e)
+            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index="-", status="failed", http_status=http_status if http_status is not None else "-", error=f"动图下载失败: {str(e)}")
+            return {"success": False, "error": f"动图下载失败: {str(e)}", "http_status": http_status}
 
     def _resolve_ugoira_zip_url(self, ugoira_info):
         if not isinstance(ugoira_info, dict):

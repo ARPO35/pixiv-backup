@@ -150,6 +150,11 @@
 | `hit_max_downloads` | boolean | 是否触达本轮上限 |
 | `rate_limited` | boolean | 是否识别为限速/服务异常 |
 | `last_error` | string \| null | 最近错误 |
+| `queue_pending` | number | 队列中 pending 数 |
+| `queue_running` | number | 队列中 running 数 |
+| `queue_failed` | number | 队列中 failed 数 |
+| `queue_permanent_failed` | number | 队列中 permanent_failed 数 |
+| `queue_done` | number | 队列中 done 数 |
 | `last_run` | string | 最近完成时间 |
 | `cooldown_reason` | string | 冷却原因（仅 `cooldown` 状态） |
 | `next_run_at` | string | 下次巡检时间（仅 `cooldown` 状态） |
@@ -211,7 +216,10 @@ YYYY-MM-DD HH:MM:SS - pixiv-backup.audit - INFO - event=luci_action source=<cont
       "illust_id": 12345678,
       "status": "pending",
       "retry_count": 0,
+      "failed_rounds": 0,
       "last_error": null,
+      "error_category": null,
+      "http_status": null,
       "next_retry_at": null,
       "is_bookmarked": true,
       "is_following_author": false,
@@ -225,8 +233,10 @@ YYYY-MM-DD HH:MM:SS - pixiv-backup.audit - INFO - event=luci_action source=<cont
 
 说明：
 
-- `status` 取值：`pending` / `running` / `done` / `failed`。
+- `status` 取值：`pending` / `running` / `done` / `failed` / `permanent_failed`。
+- `error_category` 取值：`invalid` / `rate_limit` / `network` / `auth` / `unknown`。
 - `failed` 任务会按 `next_retry_at` 延后重试。
+- `permanent_failed` 表示自动重试已终止（当前策略：失效作品连续失败达到阈值）。
 - 前端可基于该文件展示“排队中/失败重试中”状态。
 
 ## 9. 前端实现建议（最小读取流程）

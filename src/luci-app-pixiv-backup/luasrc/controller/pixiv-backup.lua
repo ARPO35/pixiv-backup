@@ -73,6 +73,7 @@ function action_status()
             pending = 0,
             running = 0,
             failed = 0,
+            permanent_failed = 0,
             done = 0,
             next_retry_at = nil
         },
@@ -139,12 +140,14 @@ function action_status()
     local rp = tonumber(result.runtime.queue_pending or 0) or 0
     local rr = tonumber(result.runtime.queue_running or 0) or 0
     local rf = tonumber(result.runtime.queue_failed or 0) or 0
+    local rpf = tonumber(result.runtime.queue_permanent_failed or 0) or 0
     local rd = tonumber(result.runtime.queue_done or 0) or 0
-    local runtime_total = rp + rr + rf + rd
+    local runtime_total = rp + rr + rf + rpf + rd
     if runtime_total > 0 then
         result.queue_summary.pending = rp
         result.queue_summary.running = rr
         result.queue_summary.failed = rf
+        result.queue_summary.permanent_failed = rpf
         result.queue_summary.done = rd
         result.queue_summary.total = runtime_total
     else
@@ -169,6 +172,8 @@ function action_status()
                             if nra and nra ~= "" and (not next_retry or nra < next_retry) then
                                 next_retry = nra
                             end
+                        elseif status == "permanent_failed" then
+                            result.queue_summary.permanent_failed = result.queue_summary.permanent_failed + 1
                         elseif status == "done" then
                             result.queue_summary.done = result.queue_summary.done + 1
                         end

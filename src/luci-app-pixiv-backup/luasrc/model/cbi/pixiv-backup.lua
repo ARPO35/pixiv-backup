@@ -205,7 +205,7 @@ live_panel.cfgvalue = function(self, section)
     <div>本轮进度: <span id="pb-live-runtime-progress">-</span></div>
     <div>冷却信息: <span id="pb-live-runtime-cooldown">-</span></div>
     <div>总共已处理: <span id="pb-live-total-processed">0</span></div>
-    <div>队列汇总: <span id="pb-live-queue-summary">total=0 pending=0 running=0 failed=0 done=0</span></div>
+    <div>队列汇总: <span id="pb-live-queue-summary">total=0 pending=0 running=0 failed=0 permanent_failed=0 done=0</span></div>
     <div>最近错误: <span id="pb-live-last-error">无</span></div>
   </div>
 </div>
@@ -236,7 +236,7 @@ live_panel.cfgvalue = function(self, section)
           setText('pb-live-runtime-cooldown', '无');
         }
         setText('pb-live-total-processed', stats.total_processed_all || 0);
-        setText('pb-live-queue-summary', 'total=' + (queue.total || 0) + ' pending=' + (queue.pending || 0) + ' running=' + (queue.running || 0) + ' failed=' + (queue.failed || 0) + ' done=' + (queue.done || 0));
+        setText('pb-live-queue-summary', 'total=' + (queue.total || 0) + ' pending=' + (queue.pending || 0) + ' running=' + (queue.running || 0) + ' failed=' + (queue.failed || 0) + ' permanent_failed=' + (queue.permanent_failed || 0) + ' done=' + (queue.done || 0));
         setText('pb-live-last-error', runtime.last_error || '无');
       })
       .catch(function() {

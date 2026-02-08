@@ -1,6 +1,7 @@
 import json
 import time
 import random
+import re
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -8,6 +9,9 @@ from typing import Dict
 
 
 class PixivCrawler:
+    MAX_ATTEMPTS_PER_ROUND = 3
+    INVALID_FAILED_ROUNDS_LIMIT = 2
+
     def __init__(self, config, auth_manager, database, downloader, progress_callback=None, stop_checker=None):
         """初始化爬虫"""
         self.config = config
@@ -89,6 +93,7 @@ class PixivCrawler:
             "queue_running": stats.get("queue_running", 0),
             "queue_failed": stats.get("queue_failed", 0),
             "queue_done": stats.get("queue_done", 0),
+            "queue_permanent_failed": stats.get("queue_permanent_failed", 0),
             "stop_requested": stats.get("stop_requested", False),
         }
         if message:
@@ -191,6 +196,7 @@ class PixivCrawler:
             "queue_running": 0,
             "queue_failed": 0,
             "queue_done": 0,
+            "queue_permanent_failed": 0,
         }
         for item in items:
             status = item.get("status")
@@ -200,6 +206,8 @@ class PixivCrawler:
                 counts["queue_running"] += 1
             elif status == "failed":
                 counts["queue_failed"] += 1
+            elif status == "permanent_failed":
+                counts["queue_permanent_failed"] += 1
             elif status == "done":
                 counts["queue_done"] += 1
         return counts
@@ -410,7 +418,10 @@ class PixivCrawler:
                     "illust_id": illust_id,
                     "status": "pending",
                     "retry_count": 0,
+                    "failed_rounds": 0,
                     "last_error": None,
+                    "error_category": None,
+                    "http_status": None,
                     "next_retry_at": None,
                     "is_bookmarked": bool(illust.get("is_bookmarked", False)),
                     "is_following_author": bool(illust.get("is_following_author", False)),
@@ -431,6 +442,9 @@ class PixivCrawler:
                 existing["status"] = "pending"
                 existing["next_retry_at"] = None
                 existing["last_error"] = None
+                existing["error_category"] = None
+                existing["http_status"] = None
+                existing["failed_rounds"] = 0
                 reset_tasks += 1
                 self._log_event("enqueue", illust_id=illust_id, status="reset_pending", prev_status=prev_status)
 
@@ -454,6 +468,107 @@ class PixivCrawler:
                 return True
             return now >= next_retry_at
         return False
+
+    def _extract_http_status(self, error_msg):
+        msg = str(error_msg or "")
+        patterns = [
+            r"status\s*[:=]?\s*(\d{3})",
+            r"http\s*[:=]?\s*(\d{3})",
+            r"\b(\d{3})\s+(?:client|server)\s+error\b",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, msg, flags=re.IGNORECASE)
+            if m:
+                try:
+                    return int(m.group(1))
+                except Exception:
+                    return None
+        return None
+
+    def _classify_error(self, error_msg, explicit_http_status=None):
+        msg = (error_msg or "").lower()
+        http_status = explicit_http_status if explicit_http_status is not None else self._extract_http_status(msg)
+
+        invalid_keywords = [
+            "illust not found",
+            "not found",
+            "deleted",
+            "private",
+            "作品不存在",
+            "已删除",
+            "无权限查看",
+            "not visible",
+        ]
+        network_keywords = [
+            "timeout",
+            "timed out",
+            "connection reset",
+            "connection aborted",
+            "network is unreachable",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "dns",
+            "proxyerror",
+            "ssl",
+        ]
+        auth_keywords = [
+            "unauthorized",
+            "invalid_grant",
+            "invalid token",
+            "authentication",
+            "token",
+            "refresh token",
+        ]
+
+        if http_status in (404, 410):
+            return "invalid", http_status
+        if http_status == 429:
+            return "rate_limit", http_status
+        if http_status == 401:
+            return "auth", http_status
+        if http_status in (500, 502, 503, 504):
+            return "rate_limit", http_status
+        if http_status == 403:
+            if any(k in msg for k in invalid_keywords):
+                return "invalid", http_status
+            return "rate_limit", http_status
+
+        if any(k in msg for k in invalid_keywords):
+            return "invalid", http_status
+        if any(k in msg for k in network_keywords):
+            return "network", http_status
+        if any(k in msg for k in auth_keywords):
+            return "auth", http_status
+        if self._is_rate_limit_error(msg):
+            return "rate_limit", http_status
+        return "unknown", http_status
+
+    def _download_with_round_retries(self, item):
+        illust = item.get("illust") or {}
+        illust_id = item.get("illust_id")
+        result = {"success": False, "error": "未知错误"}
+        attempts = 0
+        for attempt in range(1, self.MAX_ATTEMPTS_PER_ROUND + 1):
+            attempts = attempt
+            result = self._download_illust(illust)
+            if result.get("success") or result.get("skipped", False) or result.get("stopped", False):
+                break
+            category, http_status = self._classify_error(result.get("error"), result.get("http_status"))
+            result["error_category"] = category
+            result["http_status"] = http_status
+            self._log_event(
+                "task_attempt_failed",
+                illust_id=illust_id,
+                attempt=attempt,
+                max_attempts=self.MAX_ATTEMPTS_PER_ROUND,
+                category=category,
+                http_status=http_status if http_status is not None else "-",
+                error=result.get("error", "unknown"),
+            )
+            if category == "rate_limit":
+                break
+        result["attempts_in_round"] = attempts
+        return result
 
     def _next_retry_seconds(self, retry_count):
         # 指数退避，最长 1 小时
@@ -503,6 +618,10 @@ class PixivCrawler:
             if self.downloader.is_illust_fully_downloaded(illust):
                 item["status"] = "done"
                 item["updated_at"] = self._now_str()
+                item["last_error"] = None
+                item["error_category"] = None
+                item["http_status"] = None
+                item["failed_rounds"] = 0
                 stats["skipped"] += 1
                 stats["total"] += 1
                 self._log_event("dequeue", illust_id=illust_id, status="skip_already_downloaded")
@@ -517,16 +636,19 @@ class PixivCrawler:
             self._save_task_queue(items)
             self._log_event("dequeue", illust_id=illust_id, prev_status=prev_status, status="running")
 
-            dl_result = self._download_illust(illust)
+            dl_result = self._download_with_round_retries(item)
             stats["total"] += 1
             if dl_result.get("success"):
                 item["status"] = "done"
                 item["last_error"] = None
+                item["error_category"] = None
+                item["http_status"] = None
+                item["failed_rounds"] = 0
                 item["next_retry_at"] = None
                 item["updated_at"] = self._now_str()
                 stats["success"] += 1
                 downloaded_count += 1
-                self._log_event("task_result", illust_id=illust_id, status="success")
+                self._log_event("task_result", illust_id=illust_id, status="success", attempts=dl_result.get("attempts_in_round", 1))
             elif dl_result.get("stopped", False):
                 item["status"] = "pending"
                 item["updated_at"] = self._now_str()
@@ -536,26 +658,56 @@ class PixivCrawler:
             elif dl_result.get("skipped", False):
                 item["status"] = "done"
                 item["last_error"] = None
+                item["error_category"] = None
+                item["http_status"] = None
+                item["failed_rounds"] = 0
                 item["next_retry_at"] = None
                 item["updated_at"] = self._now_str()
                 stats["skipped"] += 1
                 self._log_event("task_result", illust_id=illust_id, status="skipped")
             else:
                 err = dl_result.get("error") or "未知错误"
+                error_category = dl_result.get("error_category", "unknown")
+                http_status = dl_result.get("http_status")
+                attempts_in_round = int(dl_result.get("attempts_in_round", 1) or 1)
                 retry_count = int(item.get("retry_count", 0)) + 1
                 wait_seconds = self._next_retry_seconds(retry_count)
                 next_retry_at = datetime.now() + timedelta(seconds=wait_seconds)
 
-                item["status"] = "failed"
                 item["retry_count"] = retry_count
                 item["last_error"] = err
-                item["next_retry_at"] = next_retry_at.strftime("%Y-%m-%d %H:%M:%S")
+                item["error_category"] = error_category
+                item["http_status"] = http_status
+                if error_category == "invalid":
+                    failed_rounds = int(item.get("failed_rounds", 0) or 0) + 1
+                    item["failed_rounds"] = failed_rounds
+                    if failed_rounds >= self.INVALID_FAILED_ROUNDS_LIMIT:
+                        item["status"] = "permanent_failed"
+                        item["next_retry_at"] = None
+                    else:
+                        item["status"] = "failed"
+                        item["next_retry_at"] = next_retry_at.strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    item["failed_rounds"] = 0
+                    item["status"] = "failed"
+                    item["next_retry_at"] = next_retry_at.strftime("%Y-%m-%d %H:%M:%S")
                 item["updated_at"] = self._now_str()
 
                 stats["failed"] += 1
                 stats["last_error"] = err
-                self._log_event("task_result", illust_id=illust_id, status="failed", retry_count=retry_count, next_retry_at=item["next_retry_at"], error=err)
-                if self._is_rate_limit_error(err):
+                self._log_event(
+                    "task_result",
+                    illust_id=illust_id,
+                    status=item["status"],
+                    retry_count=retry_count,
+                    failed_rounds=item.get("failed_rounds", 0),
+                    attempts_in_round=attempts_in_round,
+                    error_category=error_category,
+                    http_status=http_status if http_status is not None else "-",
+                    next_retry_at=item.get("next_retry_at", "-"),
+                    error=err,
+                )
+                if error_category == "rate_limit":
                     stats["rate_limited"] = True
 
             self._save_task_queue(items)
@@ -641,7 +793,7 @@ class PixivCrawler:
             self._merge_stats(stats, queue_stats)
             if queue_stats.get("stop_requested"):
                 stats["stop_requested"] = True
-            for key in ("queue_pending", "queue_running", "queue_failed", "queue_done"):
+            for key in ("queue_pending", "queue_running", "queue_failed", "queue_done", "queue_permanent_failed"):
                 stats[key] = queue_stats.get(key, stats.get(key, 0))
         self._notify_progress("done", stats, "任务队列处理完成" if not stats.get("stop_requested") else "收到停止请求，任务已中断")
         self._log_event(
