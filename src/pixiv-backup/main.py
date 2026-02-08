@@ -500,9 +500,7 @@ def main():
             print("参数错误: run 模式必须指定大于 0 的下载数量，例如: pixiv-backup run 20", file=sys.stderr)
             _emit_cli_audit(_event_line("cli_command_result", command="run", status="usage_error", exit_code=EXIT_USAGE))
             return EXIT_USAGE
-        service = PixivBackupService()
-        result = service.run(max_download_limit=args.count, full_scan=bool(args.full_scan))
-        ret = EXIT_OK if result.get("success") else EXIT_ERROR
+        ret = _run_single_cycle_with_daemon_pause(args.count, full_scan=bool(args.full_scan))
         _emit_cli_audit(_event_line("cli_command_result", command="run", count=args.count, full_scan=bool(args.full_scan), status="ok" if ret == EXIT_OK else "error", exit_code=ret))
         return ret
 
@@ -1324,6 +1322,39 @@ def _is_service_running():
         return False
     result = subprocess.run([str(initd), "running"], capture_output=True, text=True, check=False)
     return result.returncode == 0
+
+
+def _run_single_cycle_with_daemon_pause(count, full_scan=False):
+    daemon_was_running = _is_service_running()
+    daemon_paused = False
+    run_ret = EXIT_ERROR
+    _emit_cli_audit(_event_line("run_guard_start", daemon_running=daemon_was_running, count=count, full_scan=bool(full_scan)))
+
+    if daemon_was_running:
+        print("检测到后台服务运行中，先暂停守护进程再执行 run ...")
+        stop_ret = _run_initd_command("stop")
+        if stop_ret != EXIT_OK:
+            print("暂停守护进程失败，取消本次 run。", file=sys.stderr)
+            _emit_cli_audit(_event_line("run_guard_stop_daemon", status="error", exit_code=stop_ret))
+            return EXIT_ERROR
+        daemon_paused = True
+        _emit_cli_audit(_event_line("run_guard_stop_daemon", status="ok"))
+
+    try:
+        service = PixivBackupService()
+        result = service.run(max_download_limit=count, full_scan=bool(full_scan))
+        run_ret = EXIT_OK if result.get("success") else EXIT_ERROR
+    finally:
+        if daemon_paused:
+            print("恢复后台守护进程 ...")
+            start_ret = _run_initd_command("start")
+            if start_ret != EXIT_OK:
+                print("警告: run 结束后恢复守护进程失败，请手动执行 pixiv-backup start", file=sys.stderr)
+                _emit_cli_audit(_event_line("run_guard_restore_daemon", status="error", exit_code=start_ret))
+                run_ret = EXIT_ERROR
+            else:
+                _emit_cli_audit(_event_line("run_guard_restore_daemon", status="ok"))
+    return run_ret
 
 
 def _write_runtime_status_patch(output_dir, patch):
