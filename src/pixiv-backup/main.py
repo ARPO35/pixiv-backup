@@ -1387,15 +1387,38 @@ def _record_trigger_status(source, status, detail):
             pass
 
 
+def _read_runtime_status_for_trigger():
+    for output_dir in _resolve_force_run_output_dirs():
+        status_file = Path(output_dir) / "data" / "status.json"
+        if not status_file.exists():
+            continue
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                parsed = json.load(f)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+    return {}
+
+
 def _trigger_immediate_scan(source):
     running = _is_service_running()
     ok = _touch_force_run_flag()
     if ok:
-        detail = "service_running" if running else "service_not_running"
+        runtime = _read_runtime_status_for_trigger()
+        state = runtime.get("state", "-")
+        phase = runtime.get("phase", "-")
+        detail = f"service_running:{state}/{phase}" if running else "service_not_running"
         _record_trigger_status(source, "ok", detail)
-        _emit_cli_audit(_event_line("trigger_request", source=source, status="ok", service_running=running))
+        _emit_cli_audit(_event_line("trigger_request", source=source, status="ok", service_running=running, state=state, phase=phase))
         if running:
-            print("已触发立即扫描请求（服务运行中，等待将被中断）")
+            if state == "cooldown":
+                print("已触发立即扫描请求（当前处于冷却，预计 1-2 秒内中断等待并开始下一轮）")
+            elif state == "syncing":
+                print("已触发立即扫描请求（当前正在同步，本轮结束后将立即开始下一轮）")
+            else:
+                print(f"已触发立即扫描请求（当前状态: {state}/{phase}）")
         else:
             print("已写入触发标志（服务当前未运行，启动后将生效）")
         return EXIT_OK

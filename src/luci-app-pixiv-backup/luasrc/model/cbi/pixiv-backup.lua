@@ -192,8 +192,8 @@ local start_btn = status_section:option(Button, "_start", "立即开始备份")
 start_btn.inputtitle = "跳过冷却并立即扫描"
 start_btn.inputstyle = "apply"
 start_btn.write = function(self, section)
-    local output_dir = uci:get("pixiv-backup", "settings", "output_dir") or "/mnt/sda1/pixiv-backup"
-    local rc = sys.call("pixiv-backup trigger >/tmp/pixiv-backup-start.log 2>&1")
+    local trigger_bin = fs.access("/usr/bin/pixiv-backup") and "/usr/bin/pixiv-backup" or "pixiv-backup"
+    local rc = sys.call(trigger_bin .. " trigger >/tmp/pixiv-backup-start.log 2>&1")
     local result = fs.readfile("/tmp/pixiv-backup-start.log") or ""
     write_luci_audit("cbi", "trigger", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
 end

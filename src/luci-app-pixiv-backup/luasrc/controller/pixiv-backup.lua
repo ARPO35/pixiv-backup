@@ -201,11 +201,18 @@ function action_start()
 
     local main = uci:get_all("pixiv-backup", "settings")
     local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
-    local rc = sys.call("pixiv-backup trigger >/tmp/pixiv-backup-start.log 2>&1")
+    local trigger_bin = fs.access("/usr/bin/pixiv-backup") and "/usr/bin/pixiv-backup" or "pixiv-backup"
+    local rc = sys.call(trigger_bin .. " trigger >/tmp/pixiv-backup-start.log 2>&1")
     local result = fs.readfile("/tmp/pixiv-backup-start.log") or ""
     write_luci_audit(output_dir, "controller", "trigger", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
     http.prepare_content("text/plain; charset=utf-8")
-    http.write(result ~= "" and result or "已请求立即扫描")
+    if result ~= "" then
+        http.write(result)
+    elseif rc == 0 then
+        http.write("已请求立即扫描")
+    else
+        http.write("立即扫描触发失败：未返回详细输出")
+    end
 end
 
 function action_stop()

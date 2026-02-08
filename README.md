@@ -140,6 +140,9 @@ pixiv-backup trigger
 # 执行服务测试（与 init.d test 等价）
 pixiv-backup test
 ```
+说明：
+- `pixiv-backup trigger` 会输出当前服务状态与预计生效时机（冷却中会在 1-2 秒内跳过等待）。
+- 若 LuCI “立即扫描”按钮异常，可直接使用 `pixiv-backup trigger` 触发并查看返回原因。
 
 ### 手动运行备份
 ```bash
