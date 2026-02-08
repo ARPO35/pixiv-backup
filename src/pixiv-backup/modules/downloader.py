@@ -154,7 +154,9 @@ class DownloadManager:
             "image_urls": illust_info.get("image_urls", {}),
             "tools": illust_info.get("tools", []),
             "download_time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "original_url": f"https://www.pixiv.net/artworks/{illust_id}"
+            "original_url": f"https://www.pixiv.net/artworks/{illust_id}",
+            "is_bookmarked": bool(illust_info.get("is_bookmarked", False)),
+            "is_following_author": bool(illust_info.get("is_following_author", False)),
         }
         
         # 保存JSON文件

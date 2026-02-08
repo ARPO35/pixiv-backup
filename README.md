@@ -13,71 +13,6 @@
 - 📊 **运行状态**: 显示当前状态、处理进度、冷却信息、最近错误
 - 🔄 **断点续传**: 支持从上次中断处继续下载
 
-## 安装方法
-
-### 1. 直接安装（预编译包，推荐）
-
-```bash
-# 下载安装包
-wget https://github.com/ARPO35/pixiv-backup/releases/download/v1.0.0/pixiv-backup_1.0.0-1_all.ipk
-wget https://github.com/ARPO35/pixiv-backup/releases/download/v1.0.0/luci-app-pixiv-backup_1.0.0-1_all.ipk
-
-# 安装
-opkg install pixiv-backup_1.0.0-1_all.ipk
-opkg install luci-app-pixiv-backup_1.0.0-1_all.ipk
-```
-
-### 2. GitHub Actions 自动编译
-
-本项目支持使用 GitHub Actions 自动编译 OpenWrt 包，无需本地配置编译环境。
-
-#### 使用方法：
-
-**方法 A：自动触发编译**
-1. Fork 本仓库到你的 GitHub 账号
-2. 推送代码到 `main` 或 `master` 分支
-3. 在 GitHub 仓库的 "Actions" 页面查看编译进度
-4. 编译完成后，在 Artifacts 中下载 `.ipk` 文件
-
-**方法 B：手动触发编译**
-1. 进入 GitHub 仓库的 "Actions" 页面
-2. 选择 "Build OpenWrt Package" 工作流
-3. 点击 "Run workflow" 按钮
-4. 选择分支并运行
-
-**方法 C：创建 Release**
-```bash
-# 创建并推送标签
-git tag v1.0.0
-git push origin v1.0.0
-```
-GitHub Actions 会自动编译并创建 Release，IPK 文件会附加到 Release 中。
-
-详细说明请查看：[`.github/workflows/README.md`](.github/workflows/README.md)
-
-### 3. 本地编译（需要 OpenWrt SDK）
-
-```bash
-# 克隆代码
-git clone https://github.com/ARPO35/pixiv-backup.git
-
-# 将项目复制到 OpenWrt SDK 的 package 目录
-cp -r pixiv-backup /path/to/openwrt-sdk/package/
-
-# 进入 OpenWrt SDK 目录
-cd /path/to/openwrt-sdk
-
-# 配置编译选项
-make menuconfig  # 选择 Utilities -> pixiv-backup, LuCI -> Applications -> luci-app-pixiv-backup
-
-# 编译
-make package/pixiv-backup/compile V=s
-
-# 安装
-opkg install bin/packages/*/pixiv-backup*.ipk
-opkg install bin/packages/*/luci-app-pixiv-backup*.ipk
-```
-
 ## 配置步骤
 
 ### 1. 获取Pixiv Refresh Token
@@ -115,7 +50,6 @@ pixiv-backup start
 # 查看状态
 pixiv-backup status
 ```
-说明：仍兼容 `/etc/init.d/pixiv-backup ...`，但推荐优先使用 `pixiv-backup` 统一入口。
 
 ## 目录结构
 
@@ -134,6 +68,7 @@ pixiv-backup status
 │   └── ...
 └── data/                  # 程序数据
     ├── pixiv.db          # SQLite数据库
+    ├── task_queue.json   # 扫描后待下载任务队列
     ├── cache/            # 缓存文件
     ├── logs/             # 日志文件
     ├── status.json       # 运行状态
@@ -159,7 +94,7 @@ pixiv-backup status
   "page_count": 1,
   "width": 1200,
   "height": 800,
-  "bookmark_count": job_id,
+  "bookmark_count": 1234,
   "view_count": 5000,
   "sanity_level": 2,
   "x_restrict": 0,
@@ -172,9 +107,12 @@ pixiv-backup status
   },
   "tools": ["SAI", "Photoshop"],
   "download_time": "2023-12-01 14:30:00",
-  "original_url": "https://www.pixiv.net/artworks/12345678"
+  "original_url": "https://www.pixiv.net/artworks/12345678",
+  "is_bookmarked": true,
+  "is_following_author": false
 }
 ```
+说明：当前为开发阶段数据结构，默认不做旧 metadata 兼容迁移。
 
 ## 命令行工具
 
@@ -194,6 +132,9 @@ pixiv-backup restart
 
 # 重启并立即触发新一轮
 pixiv-backup restart --force-run
+
+# 仅触发立即扫描（不启动服务）
+pixiv-backup trigger
 
 # 执行服务测试（与 init.d test 等价）
 pixiv-backup test

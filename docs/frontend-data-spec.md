@@ -26,6 +26,7 @@
 │   └── <illust_id>.json
 └── data/
     ├── pixiv.db                # SQLite（可选读取）
+    ├── task_queue.json         # 扫描构建的下载任务队列
     ├── status.json             # 运行态
     ├── last_run.txt            # 最后完成时间（可选）
     ├── run_history.json        # 运行历史（可选）
@@ -93,6 +94,8 @@
 | `tools` | string[] | 使用工具 |
 | `download_time` | string | 本地下载时间（`YYYY-MM-DD HH:mm:ss`） |
 | `original_url` | string | 作品页 URL（`https://www.pixiv.net/artworks/<id>`） |
+| `is_bookmarked` | boolean | 是否来自收藏扫描 |
+| `is_following_author` | boolean | 是否来自关注作者扫描 |
 
 ## 4.2 真实样例（节选）
 
@@ -193,7 +196,38 @@ YYYY-MM-DD HH:MM:SS - pixiv-backup.audit - INFO - event=luci_action source=<cont
 ## 8. 兼容性与历史迁移
 
 - 当前版本使用按作品 ID 的平铺元数据：`metadata/<illust_id>.json`。
-- 如果遇到历史数据（例如按用户分目录），前端应提供兼容扫描或迁移提示。
+- 当前开发阶段默认不兼容旧历史结构，前端按现行 schema 开发即可。
+
+## 8.1 任务队列（task_queue.json）
+
+路径：`data/task_queue.json`
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-02-08 12:00:00",
+  "items": [
+    {
+      "illust_id": 12345678,
+      "status": "pending",
+      "retry_count": 0,
+      "last_error": null,
+      "next_retry_at": null,
+      "is_bookmarked": true,
+      "is_following_author": false,
+      "enqueued_at": "2026-02-08 12:00:00",
+      "updated_at": "2026-02-08 12:00:00",
+      "illust": { "...": "Pixiv 原始作品对象（裁剪后）" }
+    }
+  ]
+}
+```
+
+说明：
+
+- `status` 取值：`pending` / `running` / `done` / `failed`。
+- `failed` 任务会按 `next_retry_at` 延后重试。
+- 前端可基于该文件展示“排队中/失败重试中”状态。
 
 ## 9. 前端实现建议（最小读取流程）
 
