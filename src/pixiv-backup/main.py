@@ -905,6 +905,17 @@ def _run_initd_command(action):
         print(result.stdout, end="")
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
+    if action == "stop" and result.returncode == 0:
+        time.sleep(1)
+        if _is_daemon_process_alive():
+            _emit_cli_audit(_event_line("stop_residual_detected", status="warning"))
+            _force_kill_daemon_process()
+            time.sleep(1)
+            if _is_daemon_process_alive():
+                print("警告: stop 后仍检测到 pixiv-backup --daemon 进程", file=sys.stderr)
+                _emit_cli_audit(_event_line("stop_residual_detected", status="error"))
+                return EXIT_ERROR
+            _emit_cli_audit(_event_line("stop_residual_detected", status="killed"))
     _emit_cli_audit(
         _event_line(
             "initd_command",
@@ -914,6 +925,25 @@ def _run_initd_command(action):
         )
     )
     return EXIT_OK if result.returncode == 0 else EXIT_ERROR
+
+
+def _is_daemon_process_alive():
+    pgrep = shutil.which("pgrep")
+    if not pgrep:
+        return False
+    result = subprocess.run(
+        [pgrep, "-f", "pixiv-backup --daemon"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0 and bool((result.stdout or "").strip())
+
+
+def _force_kill_daemon_process():
+    pkill = shutil.which("pkill")
+    if pkill:
+        subprocess.run([pkill, "-f", "pixiv-backup --daemon"], check=False)
 
 
 def _random_non_negative_jitter_seconds(max_jitter_ms):

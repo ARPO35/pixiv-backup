@@ -595,7 +595,10 @@ class PixivCrawler:
         except Exception as e:
             error_msg = self._with_illust_context(illust_id, f"下载失败: {str(e)}")
             self.logger.error(f"作品 {illust_id} {error_msg}")
-            self.database.record_download_error(illust_id, error_msg)
+            try:
+                self.database.record_download_error(illust_id, error_msg)
+            except Exception as db_error:
+                self._log_event("db_record_error_failed", illust_id=illust_id, error=db_error)
             self._log_event("download_finish", illust_id=illust_id, status="failed", error=error_msg)
             return {"success": False, "error": error_msg}
 

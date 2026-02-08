@@ -1,20 +1,56 @@
 import sqlite3
 import json
+import logging
 from pathlib import Path
 from datetime import datetime
+
 
 class DatabaseManager:
     def __init__(self, config):
         """初始化数据库管理器"""
         self.config = config
         self.db_path = self.config.get_database_path()
+        self.logger = logging.getLogger(__name__)
         self._init_database()
-        
+
+    def _connect(self):
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        return sqlite3.connect(str(self.db_path))
+
+    def _is_recoverable_db_error(self, error):
+        msg = str(error).lower()
+        return (
+            "no such table" in msg
+            or "unable to open database file" in msg
+            or "database disk image is malformed" in msg
+        )
+
+    def _execute_with_recovery(self, operation, default=None):
+        last_error = None
+        for attempt in range(2):
+            try:
+                return operation()
+            except sqlite3.OperationalError as e:
+                last_error = e
+                if attempt == 0 and self._is_recoverable_db_error(e):
+                    self.logger.warning("数据库异常，尝试自动修复后重试: %s", e)
+                    try:
+                        self._init_database()
+                        continue
+                    except Exception as repair_error:
+                        self.logger.error("数据库自动修复失败: %s", repair_error)
+                break
+        if default is not None:
+            return default
+        if last_error:
+            raise last_error
+        raise RuntimeError("数据库操作失败")
+
     def _init_database(self):
         """初始化数据库表结构"""
-        conn = sqlite3.connect(str(self.db_path))
+        conn = self._connect()
         cursor = conn.cursor()
-        
+
         # 用户表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
@@ -27,7 +63,7 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
         # 作品表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS illusts (
@@ -54,7 +90,7 @@ class DatabaseManager:
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         ''')
-        
+
         # 下载历史表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS download_history (
@@ -67,7 +103,7 @@ class DatabaseManager:
                 FOREIGN KEY (illust_id) REFERENCES illusts(illust_id)
             )
         ''')
-        
+
         # 创建索引
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_illusts_user_id ON illusts(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_illusts_downloaded ON illusts(downloaded)')
@@ -76,7 +112,7 @@ class DatabaseManager:
         # 兼容旧版本数据库结构，补齐缺失列
         self._ensure_column(conn, "illusts", "file_size", "INTEGER")
         self._ensure_column(conn, "download_history", "file_size", "INTEGER")
-        
+
         conn.commit()
         conn.close()
 
@@ -87,247 +123,285 @@ class DatabaseManager:
         columns = {row[1] for row in cursor.fetchall()}
         if column_name not in columns:
             cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
-        
+
     def save_user(self, user_info):
         """保存用户信息"""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT OR REPLACE INTO users 
-            (user_id, name, account, profile_image_url, is_premium, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            user_info["id"],
-            user_info["name"],
-            user_info["account"],
-            user_info.get("profile_image_urls", {}).get("medium", ""),
-            user_info.get("is_premium", False),
-            datetime.now().isoformat()
-        ))
-        
-        conn.commit()
-        conn.close()
-        
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO users
+                    (user_id, name, account, profile_image_url, is_premium, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    user_info["id"],
+                    user_info["name"],
+                    user_info["account"],
+                    user_info.get("profile_image_urls", {}).get("medium", ""),
+                    user_info.get("is_premium", False),
+                    datetime.now().isoformat()
+                ))
+                conn.commit()
+            finally:
+                conn.close()
+
+        self._execute_with_recovery(_op)
+
     def save_illust(self, illust_info):
         """保存作品信息"""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        
+
         # 保存用户信息
         if "user" in illust_info:
             self.save_user(illust_info["user"])
-            
+
         # 准备数据
         image_urls_json = json.dumps(illust_info.get("image_urls", {}), ensure_ascii=False)
         tags_json = json.dumps([tag.get("name", "") for tag in illust_info.get("tags", [])], ensure_ascii=False)
-        
-        cursor.execute('''
-            INSERT INTO illusts 
-            (illust_id, user_id, title, caption, create_date, page_count, 
-             width, height, bookmark_count, view_count, sanity_level, 
-             x_restrict, type, image_urls_json, tags_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(illust_id) DO UPDATE SET
-                user_id=excluded.user_id,
-                title=excluded.title,
-                caption=excluded.caption,
-                create_date=excluded.create_date,
-                page_count=excluded.page_count,
-                width=excluded.width,
-                height=excluded.height,
-                bookmark_count=excluded.bookmark_count,
-                view_count=excluded.view_count,
-                sanity_level=excluded.sanity_level,
-                x_restrict=excluded.x_restrict,
-                type=excluded.type,
-                image_urls_json=excluded.image_urls_json,
-                tags_json=excluded.tags_json,
-                updated_at=excluded.updated_at
-        ''', (
-            illust_info["id"],
-            illust_info["user"]["id"],
-            illust_info["title"],
-            illust_info.get("caption", ""),
-            illust_info.get("create_date", ""),
-            illust_info.get("page_count", 1),
-            illust_info.get("width", 0),
-            illust_info.get("height", 0),
-            illust_info.get("total_bookmarks", illust_info.get("bookmark_count", 0)),
-            illust_info.get("total_view", illust_info.get("view_count", 0)),
-            illust_info.get("sanity_level", 0),
-            illust_info.get("x_restrict", 0),
-            illust_info.get("type", "illust"),
-            image_urls_json,
-            tags_json,
-            datetime.now().isoformat()
-        ))
-        
-        conn.commit()
-        conn.close()
-        
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO illusts
+                    (illust_id, user_id, title, caption, create_date, page_count,
+                     width, height, bookmark_count, view_count, sanity_level,
+                     x_restrict, type, image_urls_json, tags_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(illust_id) DO UPDATE SET
+                        user_id=excluded.user_id,
+                        title=excluded.title,
+                        caption=excluded.caption,
+                        create_date=excluded.create_date,
+                        page_count=excluded.page_count,
+                        width=excluded.width,
+                        height=excluded.height,
+                        bookmark_count=excluded.bookmark_count,
+                        view_count=excluded.view_count,
+                        sanity_level=excluded.sanity_level,
+                        x_restrict=excluded.x_restrict,
+                        type=excluded.type,
+                        image_urls_json=excluded.image_urls_json,
+                        tags_json=excluded.tags_json,
+                        updated_at=excluded.updated_at
+                ''', (
+                    illust_info["id"],
+                    illust_info["user"]["id"],
+                    illust_info["title"],
+                    illust_info.get("caption", ""),
+                    illust_info.get("create_date", ""),
+                    illust_info.get("page_count", 1),
+                    illust_info.get("width", 0),
+                    illust_info.get("height", 0),
+                    illust_info.get("total_bookmarks", illust_info.get("bookmark_count", 0)),
+                    illust_info.get("total_view", illust_info.get("view_count", 0)),
+                    illust_info.get("sanity_level", 0),
+                    illust_info.get("x_restrict", 0),
+                    illust_info.get("type", "illust"),
+                    image_urls_json,
+                    tags_json,
+                    datetime.now().isoformat()
+                ))
+                conn.commit()
+            finally:
+                conn.close()
+
+        self._execute_with_recovery(_op)
+
     def mark_as_downloaded(self, illust_id, download_path, file_size=None):
         """标记作品为已下载"""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            UPDATE illusts 
-            SET downloaded = 1, 
-                download_path = ?,
-                downloaded_at = ?,
-                file_size = ?
-            WHERE illust_id = ?
-        ''', (
-            str(download_path),
-            datetime.now().isoformat(),
-            file_size,
-            illust_id
-        ))
-        
-        # 记录下载历史
-        cursor.execute('''
-            INSERT INTO download_history 
-            (illust_id, success, file_size)
-            VALUES (?, ?, ?)
-        ''', (
-            illust_id,
-            True,
-            file_size
-        ))
-        
-        conn.commit()
-        conn.close()
-        
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE illusts
+                    SET downloaded = 1,
+                        download_path = ?,
+                        downloaded_at = ?,
+                        file_size = ?
+                    WHERE illust_id = ?
+                ''', (
+                    str(download_path),
+                    datetime.now().isoformat(),
+                    file_size,
+                    illust_id
+                ))
+
+                # 记录下载历史
+                cursor.execute('''
+                    INSERT INTO download_history
+                    (illust_id, success, file_size)
+                    VALUES (?, ?, ?)
+                ''', (
+                    illust_id,
+                    True,
+                    file_size
+                ))
+
+                conn.commit()
+            finally:
+                conn.close()
+
+        self._execute_with_recovery(_op)
+
     def record_download_error(self, illust_id, error_message):
         """记录下载错误"""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO download_history 
-            (illust_id, success, error_message)
-            VALUES (?, ?, ?)
-        ''', (
-            illust_id,
-            False,
-            error_message
-        ))
-        
-        conn.commit()
-        conn.close()
-        
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO download_history
+                    (illust_id, success, error_message)
+                    VALUES (?, ?, ?)
+                ''', (
+                    illust_id,
+                    False,
+                    error_message
+                ))
+                conn.commit()
+            finally:
+                conn.close()
+
+        self._execute_with_recovery(_op)
+
     def is_downloaded(self, illust_id):
         """检查作品是否已下载"""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT downloaded FROM illusts WHERE illust_id = ?', (illust_id,))
-        result = cursor.fetchone()
-        conn.close()
-        
-        return result and result[0] == 1
-        
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('SELECT downloaded FROM illusts WHERE illust_id = ?', (illust_id,))
+                result = cursor.fetchone()
+                return bool(result and result[0] == 1)
+            finally:
+                conn.close()
+
+        return self._execute_with_recovery(_op, default=False)
+
     def get_illust_count(self):
         """获取作品总数"""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT COUNT(*) FROM illusts')
-        count = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM illusts WHERE downloaded = 1')
-        downloaded_count = cursor.fetchone()[0]
-        
-        conn.close()
-        
-        return {
-            "total": count,
-            "downloaded": downloaded_count,
-            "pending": count - downloaded_count
-        }
-        
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) FROM illusts')
+                count = cursor.fetchone()[0]
+
+                cursor.execute('SELECT COUNT(*) FROM illusts WHERE downloaded = 1')
+                downloaded_count = cursor.fetchone()[0]
+
+                return {
+                    "total": count,
+                    "downloaded": downloaded_count,
+                    "pending": count - downloaded_count
+                }
+            finally:
+                conn.close()
+
+        return self._execute_with_recovery(_op, default={"total": 0, "downloaded": 0, "pending": 0})
+
     def get_recent_downloads(self, limit=20):
         """获取最近的下载记录"""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT i.illust_id, i.title, i.downloaded_at, u.name, u.account
-            FROM illusts i
-            JOIN users u ON i.user_id = u.user_id
-            WHERE i.downloaded = 1
-            ORDER BY i.downloaded_at DESC
-            LIMIT ?
-        ''', (limit,))
-        
-        results = cursor.fetchall()
-        conn.close()
-        
-        return [
-            {
-                "illust_id": row[0],
-                "title": row[1],
-                "downloaded_at": row[2],
-                "author_name": row[3],
-                "author_account": row[4]
-            }
-            for row in results
-        ]
-        
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT i.illust_id, i.title, i.downloaded_at, u.name, u.account
+                    FROM illusts i
+                    JOIN users u ON i.user_id = u.user_id
+                    WHERE i.downloaded = 1
+                    ORDER BY i.downloaded_at DESC
+                    LIMIT ?
+                ''', (limit,))
+
+                results = cursor.fetchall()
+                return [
+                    {
+                        "illust_id": row[0],
+                        "title": row[1],
+                        "downloaded_at": row[2],
+                        "author_name": row[3],
+                        "author_account": row[4]
+                    }
+                    for row in results
+                ]
+            finally:
+                conn.close()
+
+        return self._execute_with_recovery(_op, default=[])
+
     def get_download_stats(self):
         """获取下载统计"""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        
-        # 按类型统计
-        cursor.execute('''
-            SELECT type, COUNT(*) as count, 
-                   SUM(downloaded) as downloaded_count
-            FROM illusts
-            GROUP BY type
-        ''')
-        
-        type_stats = {}
-        for row in cursor.fetchall():
-            type_stats[row[0]] = {
-                "total": row[1],
-                "downloaded": row[2]
-            }
-            
-        # 按日期统计（最近7天）
-        cursor.execute('''
-            SELECT DATE(downloaded_at) as date, COUNT(*) as count
-            FROM illusts
-            WHERE downloaded = 1 AND downloaded_at >= DATE('now', '-7 days')
-            GROUP BY DATE(downloaded_at)
-            ORDER BY date
-        ''')
-        
-        daily_stats = {}
-        for row in cursor.fetchall():
-            daily_stats[str(row[0])] = row[1]
-            
-        conn.close()
-        
-        return {
-            "by_type": type_stats,
-            "daily": daily_stats,
-            "total": self.get_illust_count()
-        }
-        
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+
+                # 按类型统计
+                cursor.execute('''
+                    SELECT type, COUNT(*) as count,
+                           SUM(downloaded) as downloaded_count
+                    FROM illusts
+                    GROUP BY type
+                ''')
+
+                type_stats = {}
+                for row in cursor.fetchall():
+                    type_stats[row[0]] = {
+                        "total": row[1],
+                        "downloaded": row[2]
+                    }
+
+                # 按日期统计（最近7天）
+                cursor.execute('''
+                    SELECT DATE(downloaded_at) as date, COUNT(*) as count
+                    FROM illusts
+                    WHERE downloaded = 1 AND downloaded_at >= DATE('now', '-7 days')
+                    GROUP BY DATE(downloaded_at)
+                    ORDER BY date
+                ''')
+
+                daily_stats = {}
+                for row in cursor.fetchall():
+                    daily_stats[str(row[0])] = row[1]
+
+                return {
+                    "by_type": type_stats,
+                    "daily": daily_stats,
+                    "total": self.get_illust_count()
+                }
+            finally:
+                conn.close()
+
+        return self._execute_with_recovery(_op, default={"by_type": {}, "daily": {}, "total": self.get_illust_count()})
+
     def cleanup_old_records(self, days=30):
         """清理旧的下载历史记录"""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            DELETE FROM download_history 
-            WHERE download_time < DATE('now', ?)
-        ''', (f'-{days} days',))
-        
-        deleted_count = cursor.rowcount
-        conn.commit()
-        conn.close()
-        
-        return deleted_count
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM download_history
+                    WHERE download_time < DATE('now', ?)
+                ''', (f'-{days} days',))
+
+                deleted_count = cursor.rowcount
+                conn.commit()
+                return deleted_count
+            finally:
+                conn.close()
+
+        return self._execute_with_recovery(_op, default=0)
