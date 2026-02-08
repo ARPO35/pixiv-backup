@@ -13,6 +13,8 @@ import argparse
 import shutil
 import subprocess
 import random
+import signal
+import threading
 from pathlib import Path
 from collections import deque
 from datetime import datetime, timedelta
@@ -39,11 +41,13 @@ EXIT_USAGE = 2
 LOG_PATTERN = "pixiv-backup-*.log"
 INITD_PATH = "/etc/init.d/pixiv-backup"
 DEFAULT_INTERVAL_JITTER_MS = 1000
+STOP_EVENT = threading.Event()
 
 class PixivBackupService:
     def __init__(self):
         """初始化备份服务"""
         self.config = ConfigManager()
+        self.stop_requested = False
         self.logger = self._setup_logging()
         
         # 验证必要配置
@@ -54,8 +58,15 @@ class PixivBackupService:
         # 初始化组件
         self.auth_manager = AuthManager(self.config)
         self.database = DatabaseManager(self.config)
-        self.downloader = DownloadManager(self.config)
-        self.crawler = PixivCrawler(self.config, self.auth_manager, self.database, self.downloader, self._on_progress)
+        self.downloader = DownloadManager(self.config, stop_checker=self.is_stop_requested)
+        self.crawler = PixivCrawler(
+            self.config,
+            self.auth_manager,
+            self.database,
+            self.downloader,
+            self._on_progress,
+            stop_checker=self.is_stop_requested,
+        )
         
         # 创建目录结构
         self._create_directories()
@@ -160,6 +171,26 @@ class PixivBackupService:
     def _on_progress(self, payload):
         self._write_runtime_status(payload)
 
+    def request_stop(self, reason="external_stop"):
+        if self.stop_requested:
+            return
+        self.stop_requested = True
+        STOP_EVENT.set()
+        self._write_runtime_status({
+            "state": "stopping",
+            "phase": "stop_requested",
+            "message": "收到停止请求，正在安全停止",
+            "stop_requested": True,
+            "stop_reason": reason,
+        })
+        try:
+            self.logger.info(_event_line("stop_requested", reason=reason))
+        except Exception:
+            pass
+
+    def is_stop_requested(self):
+        return self.stop_requested or STOP_EVENT.is_set()
+
     def _consume_force_run_flag(self):
         flag = self._force_flag_file()
         if flag.exists():
@@ -174,6 +205,9 @@ class PixivBackupService:
         """等待冷却/间隔，并支持被 force_run.flag 中断"""
         remaining = int(wait_seconds)
         while remaining > 0:
+            if self.is_stop_requested():
+                self.logger.info("检测到停止请求，结束等待")
+                return False
             if self._consume_force_run_flag():
                 self.logger.info("检测到立即备份请求，跳过当前等待")
                 self._write_runtime_status({
@@ -198,6 +232,15 @@ class PixivBackupService:
             
     def run(self, max_download_limit=None):
         """运行备份服务"""
+        if self.is_stop_requested():
+            self._write_runtime_status({
+                "state": "idle",
+                "phase": "stopped",
+                "message": "服务已停止",
+                "stop_requested": True,
+                "stopped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            return {"success": False, "stats": {}, "hit_max_downloads": False, "rate_limited": False, "last_error": "stop_requested"}
         self.logger.info("开始Pixiv备份服务")
         self._write_runtime_status({
             "state": "syncing",
@@ -208,7 +251,8 @@ class PixivBackupService:
             "skipped": 0,
             "failed": 0,
             "hit_max_downloads": False,
-            "rate_limited": False
+            "rate_limited": False,
+            "stop_requested": False,
         })
         
         try:
@@ -231,6 +275,8 @@ class PixivBackupService:
                 self.logger.warning("检测到限速/服务异常，结束本轮同步")
             elif stats.get("hit_max_downloads"):
                 self.logger.info("本轮同步达到最大下载数量，结束本轮")
+            elif stats.get("stop_requested"):
+                self.logger.info("检测到停止请求，本轮提前结束")
                 
             # 计算运行时间
             elapsed_time = time.time() - start_time
@@ -257,7 +303,12 @@ class PixivBackupService:
                 "hit_max_downloads": stats.get("hit_max_downloads", False),
                 "rate_limited": stats.get("rate_limited", False),
                 "last_error": stats.get("last_error"),
-                "last_run": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "last_run": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "stop_requested": stats.get("stop_requested", False),
+                "queue_pending": stats.get("queue_pending", 0),
+                "queue_running": stats.get("queue_running", 0),
+                "queue_failed": stats.get("queue_failed", 0),
+                "queue_done": stats.get("queue_done", 0),
             })
             
             # 保存运行记录
@@ -268,12 +319,14 @@ class PixivBackupService:
                 "stats": stats,
                 "hit_max_downloads": stats.get("hit_max_downloads", False),
                 "rate_limited": stats.get("rate_limited", False),
-                "last_error": stats.get("last_error")
+                "last_error": stats.get("last_error"),
+                "stop_requested": stats.get("stop_requested", False),
             }
             
         except KeyboardInterrupt:
             self.logger.info("用户中断操作")
-            self._write_runtime_status({"state": "idle", "phase": "interrupted", "message": "用户中断"})
+            self.request_stop("keyboard_interrupt")
+            self._write_runtime_status({"state": "idle", "phase": "interrupted", "message": "用户中断", "stopped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
             return {"success": False, "stats": {}, "hit_max_downloads": False, "rate_limited": False, "last_error": "用户中断"}
         except Exception as e:
             self.logger.error(f"备份过程中发生错误: {str(e)}", exc_info=True)
@@ -449,14 +502,17 @@ def main():
 
 def _run_daemon_loop(service):
     """守护进程模式：固定巡检 + 冷却策略"""
+    _install_signal_handlers(service)
     sync_interval_minutes = service.config.get_sync_interval_minutes()
     cooldown_limit_minutes = service.config.get_cooldown_after_limit_minutes()
     cooldown_error_minutes = service.config.get_cooldown_after_error_minutes()
     interval_jitter_ms = service.config.get_interval_jitter_ms()
 
-    while True:
+    while not service.is_stop_requested():
         service.logger.info(_event_line("daemon_cycle_start", mode=service.config.get_download_mode(), max_downloads=service.config.get_max_downloads()))
         result = service.run(max_download_limit=service.config.get_max_downloads())
+        if service.is_stop_requested():
+            break
         now = datetime.now()
 
         if result.get("rate_limited"):
@@ -497,6 +553,16 @@ def _run_daemon_loop(service):
             )
         )
         service.wait_with_force_run(wait_seconds)
+        if service.is_stop_requested():
+            break
+    service._write_runtime_status({
+        "state": "idle",
+        "phase": "stopped",
+        "message": "服务已停止",
+        "stop_requested": True,
+        "stopped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    service.logger.info(_event_line("daemon_stopped", reason="signal_or_stop"))
 
 
 def _print_status():
@@ -956,6 +1022,17 @@ def _random_non_negative_jitter_seconds(max_jitter_ms):
     if jitter_ms == 0:
         return 0.0
     return random.randint(0, jitter_ms) / 1000.0
+
+
+def _install_signal_handlers(service):
+    def _handler(signum, _frame):
+        reason = f"signal_{signum}"
+        service.request_stop(reason)
+    try:
+        signal.signal(signal.SIGTERM, _handler)
+        signal.signal(signal.SIGINT, _handler)
+    except Exception:
+        pass
 
 
 def _read_uci_value(key):

@@ -8,10 +8,11 @@ from urllib.parse import urlparse
 import mimetypes
 
 class DownloadManager:
-    def __init__(self, config):
+    def __init__(self, config, stop_checker=None):
         """初始化下载管理器"""
         self.config = config
         self.session = requests.Session()
+        self.stop_checker = stop_checker
         
         # 配置会话
         self.session.headers.update({
@@ -36,14 +37,25 @@ class DownloadManager:
 
     def _log_event(self, event, **fields):
         self.logger.info(self._event_line(event, **fields))
+
+    def _should_stop(self):
+        try:
+            return bool(self.stop_checker and self.stop_checker())
+        except Exception:
+            return False
+
+    def _ensure_parent_dir(self, file_path):
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         
     def download_image(self, url, illust_info, page_index=None):
         """下载图片"""
         try:
             illust_id = illust_info["id"]
+            if self._should_stop():
+                return {"success": False, "stopped": True, "error": "stop_requested"}
             # 创建保存路径
             save_path = self._get_save_path(url, illust_info, page_index)
-            save_path.parent.mkdir(parents=True, exist_ok=True)
+            self._ensure_parent_dir(save_path)
             if save_path.exists():
                 self._log_event("file_skip", illust_id=illust_id, page_index=page_index if page_index is not None else "-", path=save_path, reason="file_exists")
                 return {"success": False, "skipped": True, "message": "已存在", "file_path": str(save_path), "file_size": save_path.stat().st_size}
@@ -56,11 +68,23 @@ class DownloadManager:
             
             # 保存图片
             file_size = 0
-            with open(save_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        file_size += len(chunk)
+            tmp_path = Path(str(save_path) + ".part")
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+            try:
+                with open(tmp_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if self._should_stop():
+                            raise RuntimeError("stop_requested")
+                        if chunk:
+                            f.write(chunk)
+                            file_size += len(chunk)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, save_path)
+            except Exception:
+                tmp_path.unlink(missing_ok=True)
+                raise
                         
             # 保存元数据
             metadata_path = self._save_metadata(illust_info)
@@ -84,6 +108,9 @@ class DownloadManager:
             self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=err)
             return {"success": False, "error": err}
         except Exception as e:
+            if str(e) == "stop_requested":
+                self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="stopped", error="stop_requested")
+                return {"success": False, "stopped": True, "error": "stop_requested"}
             err = f"page_index={page_index if page_index is not None else 0} image_url={url} 下载失败: {str(e)}"
             self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=err)
             return {"success": False, "error": err}
@@ -165,9 +192,8 @@ class DownloadManager:
             # 默认使用jpg
             ext = "jpg"
             
-        # 创建目录结构: img/illust_id/illust_id(.pN).ext
+        # 仅计算目录结构: img/illust_id/illust_id(.pN).ext
         illust_dir = self.config.get_image_dir() / str(illust_id)
-        illust_dir.mkdir(parents=True, exist_ok=True)
 
         if page_index is not None:
             return illust_dir / f"{illust_id}.p{page_index}.{ext}"
@@ -223,10 +249,12 @@ class DownloadManager:
         """下载动图"""
         try:
             illust_id = illust_info["id"]
+            if self._should_stop():
+                return {"success": False, "stopped": True, "error": "stop_requested"}
                 
             # 创建保存路径
             save_path = self._get_ugoira_save_path(illust_info)
-            save_path.parent.mkdir(parents=True, exist_ok=True)
+            self._ensure_parent_dir(save_path)
             zip_path = save_path.with_suffix(".zip")
             if zip_path.exists():
                 self._log_event("file_skip", illust_id=illust_id, page_index="-", path=zip_path, reason="file_exists")
@@ -246,11 +274,23 @@ class DownloadManager:
             
             # 保存ZIP文件
             file_size = 0
-            with open(zip_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        file_size += len(chunk)
+            tmp_path = Path(str(zip_path) + ".part")
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+            try:
+                with open(tmp_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if self._should_stop():
+                            raise RuntimeError("stop_requested")
+                        if chunk:
+                            f.write(chunk)
+                            file_size += len(chunk)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, zip_path)
+            except Exception:
+                tmp_path.unlink(missing_ok=True)
+                raise
                         
             # 保存元数据（包含帧信息）
             metadata = illust_info.copy()
@@ -269,6 +309,9 @@ class DownloadManager:
             }
             
         except Exception as e:
+            if str(e) == "stop_requested":
+                self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index="-", status="stopped", error="stop_requested")
+                return {"success": False, "stopped": True, "error": "stop_requested"}
             self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index="-", status="failed", error=f"动图下载失败: {str(e)}")
             return {"success": False, "error": f"动图下载失败: {str(e)}"}
             
@@ -276,9 +319,8 @@ class DownloadManager:
         """获取动图保存路径"""
         illust_id = illust_info["id"]
         
-        # 创建目录结构: img/illust_id/illust_id.zip
+        # 仅计算目录结构: img/illust_id/illust_id.zip
         ugoira_dir = self.config.get_image_dir() / str(illust_id)
-        ugoira_dir.mkdir(parents=True, exist_ok=True)
         
         return ugoira_dir / f"{illust_id}.zip"
         

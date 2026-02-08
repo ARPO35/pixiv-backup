@@ -7,13 +7,14 @@ from typing import Dict
 
 
 class PixivCrawler:
-    def __init__(self, config, auth_manager, database, downloader, progress_callback=None):
+    def __init__(self, config, auth_manager, database, downloader, progress_callback=None, stop_checker=None):
         """初始化爬虫"""
         self.config = config
         self.auth_manager = auth_manager
         self.database = database
         self.downloader = downloader
         self.progress_callback = progress_callback
+        self.stop_checker = stop_checker
         self.api = None
         self.logger = logging.getLogger(__name__)
         self.high_speed_queue_size = self.config.get_high_speed_queue_size()
@@ -40,6 +41,12 @@ class PixivCrawler:
 
     def _log_event(self, event, **fields):
         self.logger.info(self._event_line(event, **fields))
+
+    def _should_stop(self):
+        try:
+            return bool(self.stop_checker and self.stop_checker())
+        except Exception:
+            return False
 
     def _get_api(self):
         """获取API客户端"""
@@ -75,6 +82,11 @@ class PixivCrawler:
             "hit_max_downloads": stats.get("hit_max_downloads", False),
             "rate_limited": stats.get("rate_limited", False),
             "last_error": stats.get("last_error"),
+            "queue_pending": stats.get("queue_pending", 0),
+            "queue_running": stats.get("queue_running", 0),
+            "queue_failed": stats.get("queue_failed", 0),
+            "queue_done": stats.get("queue_done", 0),
+            "stop_requested": stats.get("stop_requested", False),
         }
         if message:
             payload["message"] = message
@@ -104,6 +116,8 @@ class PixivCrawler:
 
     def _queue_sleep(self, processed_total):
         """按高速/低速队列节奏等待"""
+        if self._should_stop():
+            return
         if self.high_speed_queue_size > 0 and processed_total <= self.high_speed_queue_size:
             return
         if self.low_speed_interval_seconds > 0:
@@ -144,6 +158,41 @@ class PixivCrawler:
             self._log_event("queue_load_error", error=e)
             return []
 
+    def _recover_running_tasks(self, items):
+        recovered = 0
+        now = self._now_str()
+        for item in items:
+            if item.get("status") == "running":
+                item["status"] = "pending"
+                item["updated_at"] = now
+                item["last_error"] = "recovered_from_previous_running_state"
+                recovered += 1
+        if recovered > 0:
+            self._log_event("queue_recovered_running_tasks", recovered=recovered)
+        return recovered
+
+    def _queue_counts(self, items):
+        counts = {
+            "queue_pending": 0,
+            "queue_running": 0,
+            "queue_failed": 0,
+            "queue_done": 0,
+        }
+        for item in items:
+            status = item.get("status")
+            if status == "pending":
+                counts["queue_pending"] += 1
+            elif status == "running":
+                counts["queue_running"] += 1
+            elif status == "failed":
+                counts["queue_failed"] += 1
+            elif status == "done":
+                counts["queue_done"] += 1
+        return counts
+
+    def _apply_queue_counts(self, stats, items):
+        stats.update(self._queue_counts(items))
+
     def _save_task_queue(self, items):
         payload = {
             "version": 1,
@@ -179,6 +228,10 @@ class PixivCrawler:
         next_url = None
         self._log_event("scan_start", source="bookmarks", user_id=user_id)
         while True:
+            if self._should_stop():
+                stats["stop_requested"] = True
+                self._log_event("scan_stopped", source="bookmarks", reason="stop_requested")
+                break
             try:
                 if next_url:
                     page_result = api.user_bookmarks_illust(
@@ -205,6 +258,10 @@ class PixivCrawler:
             illusts = page_result.get("illusts", [])
             self._log_event("scan_page", source="bookmarks", page_size=len(illusts), next_url=bool(page_result.get("next_url")))
             for illust in illusts:
+                if self._should_stop():
+                    stats["stop_requested"] = True
+                    self._log_event("scan_stopped", source="bookmarks", reason="stop_requested")
+                    break
                 stats["scanned"] += 1
                 should_download, reason = self.config.should_download_illust(illust)
                 if not should_download:
@@ -215,6 +272,8 @@ class PixivCrawler:
 
             next_url = page_result.get("next_url")
             if not next_url:
+                break
+            if stats.get("stop_requested"):
                 break
 
         self._log_event("scan_finish", source="bookmarks", scanned=stats["scanned"], filtered=stats["filtered"], rate_limited=stats["rate_limited"])
@@ -234,6 +293,10 @@ class PixivCrawler:
         self._log_event("scan_start", source="following", user_id=user_id)
 
         while True:
+            if self._should_stop():
+                stats["stop_requested"] = True
+                self._log_event("scan_stopped", source="following_users", reason="stop_requested")
+                return stats
             try:
                 if next_url:
                     page_result = api.user_following(
@@ -264,6 +327,10 @@ class PixivCrawler:
 
         self._log_event("following_users_loaded", user_count=len(following_users))
         for follow_user_id in following_users:
+            if self._should_stop():
+                stats["stop_requested"] = True
+                self._log_event("scan_stopped", source="following", reason="stop_requested")
+                break
             try:
                 result = api.user_illusts(user_id=int(follow_user_id))
             except Exception as e:
@@ -282,6 +349,10 @@ class PixivCrawler:
             illusts = result.get("illusts", [])
             self._log_event("scan_page", source="following", follow_user_id=follow_user_id, page_size=len(illusts))
             for illust in illusts:
+                if self._should_stop():
+                    stats["stop_requested"] = True
+                    self._log_event("scan_stopped", source="following", reason="stop_requested")
+                    break
                 stats["scanned"] += 1
                 should_download, reason = self.config.should_download_illust(illust)
                 if not should_download:
@@ -291,6 +362,8 @@ class PixivCrawler:
                 self._upsert_candidate(candidates, illust, is_bookmarked=False, is_following_author=True)
 
             if stats["rate_limited"]:
+                break
+            if stats.get("stop_requested"):
                 break
 
         self._log_event("scan_finish", source="following", scanned=stats["scanned"], filtered=stats["filtered"], rate_limited=stats["rate_limited"])
@@ -382,13 +455,22 @@ class PixivCrawler:
             "hit_max_downloads": False,
             "rate_limited": False,
             "last_error": None,
+            "stop_requested": False,
         }
         items = self._load_task_queue()
+        recovered = self._recover_running_tasks(items)
+        if recovered > 0:
+            self._save_task_queue(items)
         now = datetime.now()
         downloaded_count = 0
+        self._apply_queue_counts(stats, items)
 
         self._log_event("queue_consume_start", queue_size=len(items), max_downloads=max_downloads)
         for item in items:
+            if self._should_stop():
+                stats["stop_requested"] = True
+                self._log_event("queue_consume_stopped", reason="stop_requested")
+                break
             if max_downloads > 0 and downloaded_count >= max_downloads:
                 stats["hit_max_downloads"] = True
                 break
@@ -411,6 +493,7 @@ class PixivCrawler:
                 stats["total"] += 1
                 self._log_event("dequeue", illust_id=illust_id, status="skip_already_downloaded")
                 self._save_task_queue(items)
+                self._apply_queue_counts(stats, items)
                 self._notify_progress("download_queue", stats)
                 continue
 
@@ -430,6 +513,12 @@ class PixivCrawler:
                 stats["success"] += 1
                 downloaded_count += 1
                 self._log_event("task_result", illust_id=illust_id, status="success")
+            elif dl_result.get("stopped", False):
+                item["status"] = "pending"
+                item["updated_at"] = self._now_str()
+                item["last_error"] = "stop_requested"
+                stats["stop_requested"] = True
+                self._log_event("task_result", illust_id=illust_id, status="stopped")
             elif dl_result.get("skipped", False):
                 item["status"] = "done"
                 item["last_error"] = None
@@ -456,11 +545,14 @@ class PixivCrawler:
                     stats["rate_limited"] = True
 
             self._save_task_queue(items)
+            self._apply_queue_counts(stats, items)
             self._notify_progress("download_queue", stats)
 
             if stats["rate_limited"]:
                 break
             if stats["hit_max_downloads"]:
+                break
+            if stats.get("stop_requested"):
                 break
 
             if not dl_result.get("skipped", False):
@@ -494,6 +586,7 @@ class PixivCrawler:
             "hit_max_downloads": False,
             "rate_limited": False,
             "last_error": None,
+            "stop_requested": False,
         }
         self._log_event("sync_cycle_start", user_id=user_id, download_mode=download_mode, max_downloads=max_downloads)
         self._notify_progress("scan", stats, "开始扫描新作品")
@@ -507,13 +600,17 @@ class PixivCrawler:
                 scan_errors.append(bookmark_scan.get("last_error"))
             if bookmark_scan.get("rate_limited"):
                 stats["rate_limited"] = True
+            if bookmark_scan.get("stop_requested"):
+                stats["stop_requested"] = True
 
-        if download_mode in ["following", "both"] and not stats.get("rate_limited"):
+        if download_mode in ["following", "both"] and not stats.get("rate_limited") and not stats.get("stop_requested"):
             following_scan = self._scan_following(user_id, candidates)
             if following_scan.get("last_error"):
                 scan_errors.append(following_scan.get("last_error"))
             if following_scan.get("rate_limited"):
                 stats["rate_limited"] = True
+            if following_scan.get("stop_requested"):
+                stats["stop_requested"] = True
 
         if scan_errors:
             stats["last_error"] = scan_errors[-1]
@@ -525,9 +622,14 @@ class PixivCrawler:
             f"扫描完成，候选 {len(candidates)}，新增任务 {merge_info['new_tasks']}，队列 {merge_info['queue_size']}",
         )
 
-        queue_stats = self._consume_task_queue(max_downloads)
-        self._merge_stats(stats, queue_stats)
-        self._notify_progress("done", stats, "任务队列处理完成")
+        if not stats.get("stop_requested"):
+            queue_stats = self._consume_task_queue(max_downloads)
+            self._merge_stats(stats, queue_stats)
+            if queue_stats.get("stop_requested"):
+                stats["stop_requested"] = True
+            for key in ("queue_pending", "queue_running", "queue_failed", "queue_done"):
+                stats[key] = queue_stats.get(key, stats.get(key, 0))
+        self._notify_progress("done", stats, "任务队列处理完成" if not stats.get("stop_requested") else "收到停止请求，任务已中断")
         self._log_event(
             "sync_cycle_finish",
             success=stats["success"],
@@ -585,6 +687,9 @@ class PixivCrawler:
                 # 标记为已下载（因为已存在）
                 self.database.mark_as_downloaded(illust_id, "已存在", 0)
                 self._log_event("download_finish", illust_id=illust_id, status="skipped", reason=result.get("message", "exists"))
+            elif result.get("stopped", False):
+                self._log_event("download_finish", illust_id=illust_id, status="stopped")
+                return {"success": False, "stopped": True, "error": "stop_requested"}
             else:
                 if result.get("error"):
                     result["error"] = self._with_illust_context(illust_id, result.get("error"))
@@ -593,6 +698,9 @@ class PixivCrawler:
             return result
 
         except Exception as e:
+            if str(e) == "stop_requested":
+                self._log_event("download_finish", illust_id=illust_id, status="stopped")
+                return {"success": False, "stopped": True, "error": "stop_requested"}
             error_msg = self._with_illust_context(illust_id, f"下载失败: {str(e)}")
             self.logger.error(f"作品 {illust_id} {error_msg}")
             try:
@@ -618,6 +726,8 @@ class PixivCrawler:
                     continue
 
                 r = self.downloader.download_image(image_url, illust, page_index=idx)
+                if r.get("stopped", False):
+                    return {"success": False, "stopped": True, "error": "stop_requested"}
                 if not r.get("success") and not r.get("skipped", False):
                     err = r.get("error") or "下载失败"
                     return {"success": False, "error": f"page_index={idx} image_url={image_url} {err}"}
@@ -645,6 +755,8 @@ class PixivCrawler:
             return {"success": False, "error": "未找到可下载图片链接"}
 
         result = self.downloader.download_image(image_url, illust)
+        if result.get("stopped", False):
+            return {"success": False, "stopped": True, "error": "stop_requested"}
         if result.get("skipped", False):
             return {"success": True, "file_path": result.get("file_path", ""), "file_size": result.get("file_size", 0), "message": "已存在"}
         if not result.get("success"):
