@@ -309,6 +309,8 @@ class PixivBackupService:
                 "queue_failed": stats.get("queue_failed", 0),
                 "queue_done": stats.get("queue_done", 0),
                 "queue_permanent_failed": stats.get("queue_permanent_failed", 0),
+                "last_run_processed_total": stats.get("total", 0),
+                "total_processed_all": int(self._read_runtime_status().get("total_processed_all", 0) or 0) + int(stats.get("total", 0) or 0),
             })
             
             # 保存运行记录
@@ -589,6 +591,7 @@ def _print_status():
         print(f"当前状态: {runtime.get('state', 'unknown')}")
         print(f"当前阶段: {runtime.get('phase', 'unknown')}")
         print(f"已处理: {runtime.get('processed_total', 0)}")
+        print(f"累计已处理: {runtime.get('total_processed_all', 0)}")
         if runtime.get("last_error"):
             print(f"最近错误: {runtime.get('last_error')}")
 

@@ -4,6 +4,7 @@ local fs = require("nixio.fs")
 local sys = require("luci.sys")
 local util = require("luci.util")
 local http = require("luci.http")
+local jsonc = require("luci.jsonc")
 
 local function _norm(v)
     local s = tostring(v or "-")
@@ -93,20 +94,11 @@ function action_status()
     -- 获取输出目录
     local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
     
-    -- 获取统计数据
-    local db_path = output_dir .. "/data/pixiv.db"
-    if fs.access(db_path) then
-        local count = sys.exec("sqlite3 '" .. db_path .. "' 'SELECT COUNT(*) FROM illusts;' 2>/dev/null")
-        if count and count ~= "" then
-            result.stats.total_downloaded = tonumber(count:gsub("%s+", "")) or 0
-            result.stats.total_processed_all = result.stats.total_downloaded
-        end
-        
-        -- 计算存储使用量
-        local du = sys.exec("du -sh '" .. output_dir .. "/img/' 2>/dev/null | cut -f1")
-        if du and du ~= "" then
-            result.stats.storage_used = du:gsub("%s+", "")
-        end
+    -- 统计存储使用量
+    local du = sys.exec("du -sh '" .. output_dir .. "/img/' 2>/dev/null | cut -f1")
+    if du and du ~= "" then
+        result.stats.storage_used = du:gsub("%s+", "")
+    end
     end
     
     -- 获取最后运行时间
@@ -123,10 +115,10 @@ function action_status()
     if fs.access(status_file) then
         local content = fs.readfile(status_file)
         if content and content ~= "" then
-            local jsonc = require("luci.jsonc")
             local parsed = jsonc.parse(content)
             if parsed then
                 result.runtime = parsed
+                result.stats.total_processed_all = tonumber(parsed.total_processed_all or 0) or 0
             end
         end
     end
