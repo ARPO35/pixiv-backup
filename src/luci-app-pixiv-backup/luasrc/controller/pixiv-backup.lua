@@ -118,13 +118,33 @@ function action_status()
             if parsed then
                 result.runtime = parsed
                 result.stats.total_processed_all = tonumber(parsed.total_processed_all or 0) or 0
+                if type(parsed.recent_errors) == "table" then
+                    for _, item in ipairs(parsed.recent_errors) do
+                        if type(item) == "table" then
+                            table.insert(result.recent_errors, {
+                                time = tostring(item.time or parsed.updated_at or "-"),
+                                pid = tostring(item.pid or "-"),
+                                action = tostring(item.action or "-"),
+                                detail = tostring(item.detail or "-")
+                            })
+                        end
+                        if #result.recent_errors >= 10 then
+                            break
+                        end
+                    end
+                end
             end
         end
     end
 
-    -- 最近错误（结构化）
-    if result.runtime and result.runtime.last_error and result.runtime.last_error ~= "" then
-        table.insert(result.recent_errors, result.runtime.last_error)
+    -- 最近错误兼容回退（旧字段仅有 last_error）
+    if #result.recent_errors == 0 and result.runtime and result.runtime.last_error and result.runtime.last_error ~= "" then
+        table.insert(result.recent_errors, {
+            time = tostring(result.runtime.updated_at or "-"),
+            pid = "-",
+            action = tostring(result.runtime.phase or "-"),
+            detail = tostring(result.runtime.last_error or "-")
+        })
     end
 
     -- 队列信息（优先使用 runtime 中的汇总，缺失时读取 task_queue.json）

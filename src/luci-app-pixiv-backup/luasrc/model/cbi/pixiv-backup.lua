@@ -142,8 +142,14 @@ live_panel.cfgvalue = function(self, section)
     <div>本轮进度: <span id="pb-live-runtime-progress">-</span></div>
     <div>冷却信息: <span id="pb-live-runtime-cooldown">-</span></div>
     <div>总共已处理: <span id="pb-live-total-processed">0</span></div>
-    <div>队列汇总: <span id="pb-live-queue-summary">total=0 pending=0 running=0 failed=0 permanent_failed=0 done=0</span></div>
-    <div>最近错误: <span id="pb-live-last-error">无</span></div>
+    <div>队列总数: <span id="pb-live-queue-total">0</span></div>
+    <div>队列待处理: <span id="pb-live-queue-pending">0</span></div>
+    <div>队列运行中: <span id="pb-live-queue-running">0</span></div>
+    <div>队列失败: <span id="pb-live-queue-failed">0</span></div>
+    <div>队列永久失败: <span id="pb-live-queue-permanent-failed">0</span></div>
+    <div>队列完成: <span id="pb-live-queue-done">0</span></div>
+    <div>最近错误（最多10条）:</div>
+    <pre id="pb-live-recent-errors" style="white-space: pre-wrap; word-break: break-word; margin: 4px 0 0 0;">无</pre>
   </div>
 </div>
 <script>
@@ -155,6 +161,19 @@ live_panel.cfgvalue = function(self, section)
   function setText(id, value) {
     var el = document.getElementById(id);
     if (el) el.textContent = (value === undefined || value === null || value === '') ? '-' : String(value);
+  }
+
+  function formatRecentErrors(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return '无';
+    }
+    return items.slice(0, 10).map(function(item) {
+      var t = (item && item.time) ? item.time : '-';
+      var pid = (item && item.pid) ? item.pid : '-';
+      var action = (item && item.action) ? item.action : '-';
+      var detail = (item && item.detail) ? item.detail : '-';
+      return '时间: ' + t + '  PID: ' + pid + '  操作: ' + action + '\n错误: ' + detail;
+    }).join('\n\n');
   }
 
   function updateStatus() {
@@ -173,8 +192,13 @@ live_panel.cfgvalue = function(self, section)
           setText('pb-live-runtime-cooldown', '无');
         }
         setText('pb-live-total-processed', stats.total_processed_all || 0);
-        setText('pb-live-queue-summary', 'total=' + (queue.total || 0) + ' pending=' + (queue.pending || 0) + ' running=' + (queue.running || 0) + ' failed=' + (queue.failed || 0) + ' permanent_failed=' + (queue.permanent_failed || 0) + ' done=' + (queue.done || 0));
-        setText('pb-live-last-error', runtime.last_error || '无');
+        setText('pb-live-queue-total', queue.total || 0);
+        setText('pb-live-queue-pending', queue.pending || 0);
+        setText('pb-live-queue-running', queue.running || 0);
+        setText('pb-live-queue-failed', queue.failed || 0);
+        setText('pb-live-queue-permanent-failed', queue.permanent_failed || 0);
+        setText('pb-live-queue-done', queue.done || 0);
+        setText('pb-live-recent-errors', formatRecentErrors(data.recent_errors || runtime.recent_errors || []));
       })
       .catch(function() {
         setText('pb-live-runtime-state', 'status接口读取失败');

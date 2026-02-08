@@ -47,7 +47,6 @@ class PixivBackupService:
         """初始化备份服务"""
         self.config = ConfigManager()
         self.stop_requested = False
-        self._run_total_base = self._safe_int(self._read_runtime_status().get("total_processed_all", 0), 0)
         self.logger = self._setup_logging()
         
         # 验证必要配置
@@ -70,13 +69,17 @@ class PixivBackupService:
         
         # 创建目录结构
         self._create_directories()
+        existing_recent_errors = self._read_runtime_status().get("recent_errors")
+        if not isinstance(existing_recent_errors, list):
+            existing_recent_errors = []
         self._write_runtime_status({
             "state": "idle",
             "phase": "init",
             "message": "服务已初始化",
             "processed_total": 0,
             "last_run_processed_total": 0,
-            "total_processed_all": self._run_total_base,
+            "total_processed_all": self._get_total_processed_from_db(),
+            "recent_errors": existing_recent_errors[:10],
             "success": 0,
             "skipped": 0,
             "failed": 0
@@ -176,6 +179,46 @@ class PixivBackupService:
         except Exception:
             return default
 
+    def _get_total_processed_from_db(self):
+        try:
+            counts = self.database.get_illust_count()
+            return self._safe_int(counts.get("downloaded", 0), 0)
+        except Exception as e:
+            self.logger.warning(f"读取数据库成功数量失败，回退到status缓存: {e}")
+            cached = self._read_runtime_status()
+            return self._safe_int(cached.get("total_processed_all", 0), 0)
+
+    def _extract_pid_from_error(self, detail):
+        text = str(detail or "")
+        m = re.search(r"\bpid\s*[=:]\s*(\d+)\b", text, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
+        m = re.search(r"/artworks/(\d+)", text)
+        if m:
+            return m.group(1)
+        return "-"
+
+    def _build_recent_errors(self, action, detail):
+        if not detail:
+            return None
+        current = self._read_runtime_status()
+        recent = current.get("recent_errors")
+        if not isinstance(recent, list):
+            recent = []
+        entry = {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "pid": self._extract_pid_from_error(detail),
+            "action": str(action or "unknown"),
+            "detail": str(detail),
+        }
+        if recent:
+            latest = recent[0]
+            if isinstance(latest, dict):
+                if str(latest.get("detail", "")) == entry["detail"] and str(latest.get("action", "")) == entry["action"] and str(latest.get("pid", "")) == entry["pid"]:
+                    latest["time"] = entry["time"]
+                    return recent[:10]
+        return ([entry] + recent)[:10]
+
     def _on_progress(self, payload):
         if not isinstance(payload, dict):
             return
@@ -185,7 +228,11 @@ class PixivBackupService:
             if run_processed < 0:
                 run_processed = 0
             patch["last_run_processed_total"] = run_processed
-            patch["total_processed_all"] = self._safe_int(self._run_total_base, 0) + run_processed
+        patch["total_processed_all"] = self._get_total_processed_from_db()
+        if patch.get("last_error"):
+            recent_errors = self._build_recent_errors(patch.get("phase", "unknown"), patch.get("last_error"))
+            if recent_errors is not None:
+                patch["recent_errors"] = recent_errors
         self._write_runtime_status(patch)
 
     def request_stop(self, reason="external_stop"):
@@ -254,19 +301,19 @@ class PixivBackupService:
                 "state": "idle",
                 "phase": "stopped",
                 "message": "服务已停止",
+                "total_processed_all": self._get_total_processed_from_db(),
                 "stop_requested": True,
                 "stopped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
             return {"success": False, "stats": {}, "hit_max_downloads": False, "rate_limited": False, "last_error": "stop_requested"}
         self.logger.info("开始Pixiv备份服务")
-        self._run_total_base = self._safe_int(self._read_runtime_status().get("total_processed_all", 0), 0)
         self._write_runtime_status({
             "state": "syncing",
             "phase": "start",
             "message": "开始同步",
             "processed_total": 0,
             "last_run_processed_total": 0,
-            "total_processed_all": self._run_total_base,
+            "total_processed_all": self._get_total_processed_from_db(),
             "success": 0,
             "skipped": 0,
             "failed": 0,
@@ -313,7 +360,7 @@ class PixivBackupService:
             self.logger.info(f"总计处理: {stats.get('total', 0)} 个作品")
             self.logger.info("=" * 50)
             run_processed_total = self._safe_int(stats.get("total", 0), 0)
-            total_processed_all = self._safe_int(self._run_total_base, 0) + run_processed_total
+            total_processed_all = self._get_total_processed_from_db()
             self._write_runtime_status({
                 "state": "idle",
                 "phase": "done",
@@ -335,7 +382,6 @@ class PixivBackupService:
                 "last_run_processed_total": run_processed_total,
                 "total_processed_all": total_processed_all,
             })
-            self._run_total_base = total_processed_all
             
             # 保存运行记录
             self._save_run_record(stats, elapsed_time)
@@ -352,15 +398,24 @@ class PixivBackupService:
         except KeyboardInterrupt:
             self.logger.info("用户中断操作")
             self.request_stop("keyboard_interrupt")
-            self._write_runtime_status({"state": "idle", "phase": "interrupted", "message": "用户中断", "stopped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+            self._write_runtime_status({
+                "state": "idle",
+                "phase": "interrupted",
+                "message": "用户中断",
+                "total_processed_all": self._get_total_processed_from_db(),
+                "stopped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
             return {"success": False, "stats": {}, "hit_max_downloads": False, "rate_limited": False, "last_error": "用户中断"}
         except Exception as e:
             self.logger.error(f"备份过程中发生错误: {str(e)}", exc_info=True)
+            recent_errors = self._build_recent_errors("run_error", str(e))
             self._write_runtime_status({
                 "state": "idle",
                 "phase": "error",
                 "message": "同步失败",
-                "last_error": str(e)
+                "last_error": str(e),
+                "recent_errors": recent_errors if recent_errors is not None else self._read_runtime_status().get("recent_errors", []),
+                "total_processed_all": self._get_total_processed_from_db(),
             })
             return {"success": False, "stats": {}, "hit_max_downloads": False, "rate_limited": False, "last_error": str(e)}
             
