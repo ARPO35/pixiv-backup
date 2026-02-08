@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import logging
 import requests
 from pathlib import Path
 from urllib.parse import urlparse
@@ -19,18 +20,35 @@ class DownloadManager:
         })
         
         self.timeout = self.config.get_timeout()
+        self.logger = logging.getLogger(__name__)
+
+    def _normalize_event_value(self, value):
+        text = str(value)
+        text = text.replace("\r", " ").replace("\n", " ")
+        text = " ".join(text.split())
+        return text if text else "-"
+
+    def _event_line(self, event, **fields):
+        parts = [f"event={self._normalize_event_value(event)}"]
+        for key, value in fields.items():
+            parts.append(f"{self._normalize_event_value(key)}={self._normalize_event_value(value)}")
+        return " ".join(parts)
+
+    def _log_event(self, event, **fields):
+        self.logger.info(self._event_line(event, **fields))
         
     def download_image(self, url, illust_info, page_index=None):
         """下载图片"""
         try:
-            # 检查是否已下载
             illust_id = illust_info["id"]
-            if self._is_already_downloaded(illust_id):
-                return {"success": False, "skipped": True, "message": "已存在"}
-                
             # 创建保存路径
             save_path = self._get_save_path(url, illust_info, page_index)
             save_path.parent.mkdir(parents=True, exist_ok=True)
+            if save_path.exists():
+                self._log_event("file_skip", illust_id=illust_id, page_index=page_index if page_index is not None else "-", path=save_path, reason="file_exists")
+                return {"success": False, "skipped": True, "message": "已存在", "file_path": str(save_path), "file_size": save_path.stat().st_size}
+
+            self._log_event("file_download_start", illust_id=illust_id, page_index=page_index if page_index is not None else "-", url=url, path=save_path)
             
             # 下载图片
             response = self.session.get(url, timeout=self.timeout, stream=True)
@@ -46,6 +64,7 @@ class DownloadManager:
                         
             # 保存元数据
             metadata_path = self._save_metadata(illust_info)
+            self._log_event("file_download_finish", illust_id=illust_id, page_index=page_index if page_index is not None else "-", status="success", path=save_path, file_size=file_size)
             
             # 返回结果
             return {
@@ -57,10 +76,13 @@ class DownloadManager:
             }
             
         except requests.exceptions.Timeout:
+            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error="下载超时")
             return {"success": False, "error": "下载超时"}
         except requests.exceptions.RequestException as e:
+            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=f"网络错误: {str(e)}")
             return {"success": False, "error": f"网络错误: {str(e)}"}
         except Exception as e:
+            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index=page_index if page_index is not None else "-", status="failed", error=f"下载失败: {str(e)}")
             return {"success": False, "error": f"下载失败: {str(e)}"}
             
     def _is_already_downloaded(self, illust_id):
@@ -138,6 +160,7 @@ class DownloadManager:
         # 保存JSON文件
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
+        self._log_event("metadata_saved", illust_id=illust_id, metadata_path=metadata_path)
             
         return metadata_path
         
@@ -145,14 +168,15 @@ class DownloadManager:
         """下载动图"""
         try:
             illust_id = illust_info["id"]
-            
-            # 检查是否已下载
-            if self._is_already_downloaded(illust_id):
-                return {"success": False, "skipped": True, "message": "已存在"}
                 
             # 创建保存路径
             save_path = self._get_ugoira_save_path(illust_info)
             save_path.parent.mkdir(parents=True, exist_ok=True)
+            zip_path = save_path.with_suffix(".zip")
+            if zip_path.exists():
+                self._log_event("file_skip", illust_id=illust_id, page_index="-", path=zip_path, reason="file_exists")
+                return {"success": False, "skipped": True, "message": "已存在", "file_path": str(zip_path), "file_size": zip_path.stat().st_size}
+            self._log_event("file_download_start", illust_id=illust_id, page_index="-", url=ugoira_info.get("zip_url", ""), path=zip_path)
             
             # 下载动图帧
             frames = ugoira_info.get("frames", [])
@@ -166,7 +190,6 @@ class DownloadManager:
             response.raise_for_status()
             
             # 保存ZIP文件
-            zip_path = save_path.with_suffix(".zip")
             file_size = 0
             with open(zip_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
@@ -191,6 +214,7 @@ class DownloadManager:
             }
             
         except Exception as e:
+            self._log_event("file_download_finish", illust_id=illust_info.get("id", "-"), page_index="-", status="failed", error=f"动图下载失败: {str(e)}")
             return {"success": False, "error": f"动图下载失败: {str(e)}"}
             
     def _get_ugoira_save_path(self, illust_info):

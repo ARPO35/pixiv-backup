@@ -14,6 +14,26 @@ class PixivCrawler:
         self.logger = logging.getLogger(__name__)
         self.high_speed_queue_size = self.config.get_high_speed_queue_size()
         self.low_speed_interval_seconds = self.config.get_low_speed_interval_seconds()
+        self._log_event(
+            "crawler_init",
+            high_speed_queue_size=self.high_speed_queue_size,
+            low_speed_interval_seconds=self.low_speed_interval_seconds,
+        )
+
+    def _event_line(self, event, **fields):
+        parts = [f"event={self._normalize_event_value(event)}"]
+        for key, value in fields.items():
+            parts.append(f"{self._normalize_event_value(key)}={self._normalize_event_value(value)}")
+        return " ".join(parts)
+
+    def _normalize_event_value(self, value):
+        text = str(value)
+        text = text.replace("\r", " ").replace("\n", " ")
+        text = " ".join(text.split())
+        return text if text else "-"
+
+    def _log_event(self, event, **fields):
+        self.logger.info(self._event_line(event, **fields))
         
     def _get_api(self):
         """获取API客户端"""
@@ -95,6 +115,7 @@ class PixivCrawler:
     def download_user_bookmarks(self, user_id, max_downloads_override=None):
         """下载用户收藏"""
         self.logger.info(f"开始下载用户 {user_id} 的收藏...")
+        self._log_event("scan_start", source="bookmarks", user_id=user_id)
         
         api = self._get_api()
         restrict = self.config.get_restrict_mode()
@@ -143,6 +164,7 @@ class PixivCrawler:
                     
                 illusts = page_result.get("illusts", [])
                 self.logger.info(f"获取到 {len(illusts)} 个作品")
+                self._log_event("scan_page", source="bookmarks", page_size=len(illusts), next_url=bool(page_result.get("next_url")))
                 
                 # 处理每个作品
                 for illust in illusts:
@@ -152,6 +174,7 @@ class PixivCrawler:
                     should_download, reason = self.config.should_download_illust(illust)
                     if not should_download:
                         self.logger.info(f"跳过作品 {illust['id']}: {reason}")
+                        self._log_event("skip_illust", source="bookmarks", illust_id=illust["id"], reason=reason)
                         stats["skipped"] += 1
                         continue
                         
@@ -160,10 +183,13 @@ class PixivCrawler:
                     if dl_result["success"]:
                         stats["success"] += 1
                         downloaded_count += 1
+                        self._log_event("download_result", source="bookmarks", illust_id=illust["id"], status="success")
                     elif dl_result.get("skipped", False):
                         stats["skipped"] += 1
+                        self._log_event("download_result", source="bookmarks", illust_id=illust["id"], status="skipped")
                     else:
                         stats["failed"] += 1
+                        self._log_event("download_result", source="bookmarks", illust_id=illust["id"], status="failed")
                         err = dl_result.get("error")
                         if err:
                             stats["last_error"] = err
@@ -203,12 +229,22 @@ class PixivCrawler:
                 stats["rate_limited"] = True
             
         self.logger.info(f"收藏下载完成: 成功 {stats['success']}, 跳过 {stats['skipped']}, 失败 {stats['failed']}")
+        self._log_event(
+            "scan_finish",
+            source="bookmarks",
+            success=stats["success"],
+            skipped=stats["skipped"],
+            failed=stats["failed"],
+            total=stats["total"],
+            rate_limited=stats.get("rate_limited", False),
+        )
         self._notify_progress("bookmarks", stats, "收藏同步结束")
         return stats
         
     def download_following_illusts(self, user_id, max_downloads_override=None):
         """下载关注用户的作品"""
         self.logger.info(f"开始下载用户 {user_id} 的关注用户作品...")
+        self._log_event("scan_start", source="following", user_id=user_id)
         
         api = self._get_api()
         restrict = self.config.get_restrict_mode()
@@ -252,6 +288,7 @@ class PixivCrawler:
                     break
                     
             self.logger.info(f"获取到 {len(following_users)} 个关注用户")
+            self._log_event("following_users_loaded", user_count=len(following_users))
             
             # 下载每个关注用户的作品
             downloaded_count = 0
@@ -265,6 +302,7 @@ class PixivCrawler:
                     
                 illusts = result.get("illusts", [])
                 self.logger.info(f"用户 {follow_user_id} 有 {len(illusts)} 个作品")
+                self._log_event("scan_page", source="following", follow_user_id=follow_user_id, page_size=len(illusts))
                 
                 # 处理每个作品
                 for illust in illusts:
@@ -274,6 +312,7 @@ class PixivCrawler:
                     should_download, reason = self.config.should_download_illust(illust)
                     if not should_download:
                         self.logger.info(f"跳过作品 {illust['id']}: {reason}")
+                        self._log_event("skip_illust", source="following", illust_id=illust["id"], reason=reason)
                         stats["skipped"] += 1
                         continue
                         
@@ -282,10 +321,13 @@ class PixivCrawler:
                     if dl_result["success"]:
                         stats["success"] += 1
                         downloaded_count += 1
+                        self._log_event("download_result", source="following", illust_id=illust["id"], status="success")
                     elif dl_result.get("skipped", False):
                         stats["skipped"] += 1
+                        self._log_event("download_result", source="following", illust_id=illust["id"], status="skipped")
                     else:
                         stats["failed"] += 1
+                        self._log_event("download_result", source="following", illust_id=illust["id"], status="failed")
                         err = dl_result.get("error")
                         if err:
                             stats["last_error"] = err
@@ -323,6 +365,15 @@ class PixivCrawler:
                 stats["rate_limited"] = True
             
         self.logger.info(f"关注用户作品下载完成: 成功 {stats['success']}, 跳过 {stats['skipped']}, 失败 {stats['failed']}")
+        self._log_event(
+            "scan_finish",
+            source="following",
+            success=stats["success"],
+            skipped=stats["skipped"],
+            failed=stats["failed"],
+            total=stats["total"],
+            rate_limited=stats.get("rate_limited", False),
+        )
         self._notify_progress("following", stats, "关注作品同步结束")
         return stats
         
@@ -332,6 +383,7 @@ class PixivCrawler:
         illust_type = illust.get("type", "illust")
         
         self.logger.info(f"下载作品 {illust_id}: {illust['title']}")
+        self._log_event("download_start", illust_id=illust_id, illust_type=illust_type, title=illust.get("title", ""))
         
         try:
             # 保存到数据库
@@ -340,6 +392,7 @@ class PixivCrawler:
             # 检查是否已下载
             if self.database.is_downloaded(illust_id):
                 self.logger.info(f"作品 {illust_id} 已下载，跳过")
+                self._log_event("download_skip", illust_id=illust_id, reason="database_downloaded")
                 return {"success": False, "skipped": True, "message": "已存在"}
                 
             # 根据类型下载
@@ -365,12 +418,15 @@ class PixivCrawler:
                 file_size = result.get("file_size")
                 self.database.mark_as_downloaded(illust_id, result["file_path"], file_size)
                 self.logger.info(f"作品 {illust_id} 下载成功: {result['file_path']}")
+                self._log_event("download_finish", illust_id=illust_id, status="success", file_path=result.get("file_path", ""))
             elif result.get("skipped", False):
                 # 标记为已下载（因为已存在）
                 self.database.mark_as_downloaded(illust_id, "已存在", 0)
+                self._log_event("download_finish", illust_id=illust_id, status="skipped", reason=result.get("message", "exists"))
             else:
                 if result.get("error"):
                     result["error"] = self._with_illust_context(illust_id, result.get("error"))
+                self._log_event("download_finish", illust_id=illust_id, status="failed", error=result.get("error", "unknown"))
                 
             return result
             
@@ -378,6 +434,7 @@ class PixivCrawler:
             error_msg = self._with_illust_context(illust_id, f"下载失败: {str(e)}")
             self.logger.error(f"作品 {illust_id} {error_msg}")
             self.database.record_download_error(illust_id, error_msg)
+            self._log_event("download_finish", illust_id=illust_id, status="failed", error=error_msg)
             return {"success": False, "error": error_msg}
 
     def _download_illust_images(self, illust):

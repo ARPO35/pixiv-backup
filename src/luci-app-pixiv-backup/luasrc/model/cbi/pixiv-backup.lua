@@ -203,7 +203,7 @@ start_btn.write = function(self, section)
     local output_dir = uci:get("pixiv-backup", "settings", "output_dir") or "/mnt/sda1/pixiv-backup"
     local rc = sys.call("pixiv-backup start --force-run >/tmp/pixiv-backup-start.log 2>&1")
     local result = fs.readfile("/tmp/pixiv-backup-start.log") or ""
-    write_luci_audit("cbi", "start", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
+    write_luci_audit("cbi", "start_force_run", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
 end
 
 local stop_btn = status_section:option(Button, "_stop", "停止服务")

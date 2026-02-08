@@ -396,6 +396,13 @@ def main():
     subparsers.add_parser("test", help="执行服务测试（透传 init.d test）")
 
     args = parser.parse_args()
+    _emit_cli_audit(
+        _event_line(
+            "cli_command",
+            command=args.command or "help",
+            daemon=bool(args.daemon),
+        )
+    )
 
     if args.daemon:
         service = PixivBackupService()
@@ -404,41 +411,58 @@ def main():
 
     if args.command == "status":
         _print_status()
+        _emit_cli_audit(_event_line("cli_command_result", command="status", status="ok"))
         return EXIT_OK
 
     if args.command == "log":
-        return handle_log_command(args)
+        ret = handle_log_command(args)
+        _emit_cli_audit(_event_line("cli_command_result", command="log", status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        return ret
 
     if args.command == "repair":
-        return handle_repair_command(args)
+        ret = handle_repair_command(args)
+        _emit_cli_audit(_event_line("cli_command_result", command="repair", status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        return ret
 
     if args.command == "start":
         if args.force_run:
             if not _touch_force_run_flag():
                 print("警告: force_run.flag 写入失败，可能无法立即跳过冷却", file=sys.stderr)
-        return _run_initd_command("start")
+        ret = _run_initd_command("start")
+        _emit_cli_audit(_event_line("cli_command_result", command="start", force_run=bool(args.force_run), status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        return ret
 
     if args.command == "stop":
-        return _run_initd_command("stop")
+        ret = _run_initd_command("stop")
+        _emit_cli_audit(_event_line("cli_command_result", command="stop", status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        return ret
 
     if args.command == "restart":
         if args.force_run:
             if not _touch_force_run_flag():
                 print("警告: force_run.flag 写入失败，可能无法立即跳过冷却", file=sys.stderr)
-        return _run_initd_command("restart")
+        ret = _run_initd_command("restart")
+        _emit_cli_audit(_event_line("cli_command_result", command="restart", force_run=bool(args.force_run), status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        return ret
 
     if args.command == "test":
-        return _run_initd_command("test")
+        ret = _run_initd_command("test")
+        _emit_cli_audit(_event_line("cli_command_result", command="test", status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        return ret
 
     if args.command == "run":
         if args.count <= 0:
             print("参数错误: run 模式必须指定大于 0 的下载数量，例如: pixiv-backup run 20", file=sys.stderr)
+            _emit_cli_audit(_event_line("cli_command_result", command="run", status="usage_error", exit_code=EXIT_USAGE))
             return EXIT_USAGE
         service = PixivBackupService()
         result = service.run(max_download_limit=args.count)
-        return EXIT_OK if result.get("success") else EXIT_ERROR
+        ret = EXIT_OK if result.get("success") else EXIT_ERROR
+        _emit_cli_audit(_event_line("cli_command_result", command="run", count=args.count, status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        return ret
 
     parser.print_help()
+    _emit_cli_audit(_event_line("cli_command_result", command="help", status="usage_error", exit_code=EXIT_USAGE))
     return EXIT_USAGE
 
 
@@ -450,6 +474,7 @@ def _run_daemon_loop(service):
     interval_jitter_ms = service.config.get_interval_jitter_ms()
 
     while True:
+        service.logger.info(_event_line("daemon_cycle_start", mode=service.config.get_download_mode(), max_downloads=service.config.get_max_downloads()))
         result = service.run(max_download_limit=service.config.get_max_downloads())
         now = datetime.now()
 
@@ -479,6 +504,16 @@ def _run_daemon_loop(service):
             f"进入冷却({reason})，基础等待 {base_wait_seconds}s，"
             f"随机偏移 +{int(jitter_seconds * 1000)}ms，"
             f"下次巡检时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        service.logger.info(
+            _event_line(
+                "daemon_cycle_cooldown",
+                reason=reason,
+                base_wait_seconds=base_wait_seconds,
+                jitter_ms=int(jitter_seconds * 1000),
+                wait_seconds=wait_seconds,
+                next_run_at=next_run.strftime("%Y-%m-%d %H:%M:%S"),
+            )
         )
         service.wait_with_force_run(wait_seconds)
 
@@ -615,10 +650,12 @@ def _follow_syslog():
 def handle_log_command(args):
     if args.lines <= 0:
         print("参数错误: --lines 必须大于 0", file=sys.stderr)
+        _emit_cli_audit(_event_line("log_command", status="usage_error", reason="invalid_lines", lines=args.lines))
         return EXIT_USAGE
 
     if args.file and args.syslog:
         print("参数错误: --file 和 --syslog 不能同时使用，请二选一", file=sys.stderr)
+        _emit_cli_audit(_event_line("log_command", status="usage_error", reason="source_conflict"))
         return EXIT_USAGE
 
     config = ConfigManager()
@@ -635,8 +672,10 @@ def handle_log_command(args):
     if source == "file":
         if not latest_file:
             print(f"未找到文件日志: {log_dir}", file=sys.stderr)
+            _emit_cli_audit(_event_line("log_command", status="error", source="file", reason="file_not_found", log_dir=str(log_dir)))
             return EXIT_ERROR
         _print_tail_from_file(latest_file, args.lines)
+        _emit_cli_audit(_event_line("log_command", status="ok", source="file", lines=args.lines, follow=not args.no_follow))
         if args.no_follow:
             return EXIT_OK
         return _follow_file_logs(log_dir, latest_file)
@@ -644,8 +683,10 @@ def handle_log_command(args):
     if source == "syslog":
         if not has_syslog:
             print("系统不支持 logread，无法读取 syslog", file=sys.stderr)
+            _emit_cli_audit(_event_line("log_command", status="error", source="syslog", reason="logread_not_found"))
             return EXIT_ERROR
         ret = _print_tail_from_syslog(args.lines)
+        _emit_cli_audit(_event_line("log_command", status="ok" if ret == EXIT_OK else "error", source="syslog", lines=args.lines, follow=not args.no_follow))
         if ret != EXIT_OK or args.no_follow:
             return ret
         return _follow_syslog()
@@ -653,17 +694,20 @@ def handle_log_command(args):
     # auto: 文件日志优先，缺失时回退到 syslog
     if latest_file:
         _print_tail_from_file(latest_file, args.lines)
+        _emit_cli_audit(_event_line("log_command", status="ok", source="auto_file", lines=args.lines, follow=not args.no_follow))
         if args.no_follow:
             return EXIT_OK
         return _follow_file_logs(log_dir, latest_file)
 
     if has_syslog:
         ret = _print_tail_from_syslog(args.lines)
+        _emit_cli_audit(_event_line("log_command", status="ok" if ret == EXIT_OK else "error", source="auto_syslog", lines=args.lines, follow=not args.no_follow))
         if ret != EXIT_OK or args.no_follow:
             return ret
         return _follow_syslog()
 
     print("无可用日志来源: 文件日志不存在且系统不支持 logread", file=sys.stderr)
+    _emit_cli_audit(_event_line("log_command", status="error", source="auto", reason="no_available_source"))
     return EXIT_ERROR
 
 
@@ -880,6 +924,14 @@ def _run_initd_command(action):
         print(result.stdout, end="")
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
+    _emit_cli_audit(
+        _event_line(
+            "initd_command",
+            action=action,
+            status="ok" if result.returncode == 0 else "error",
+            exit_code=result.returncode,
+        )
+    )
     return EXIT_OK if result.returncode == 0 else EXIT_ERROR
 
 
@@ -942,11 +994,35 @@ def _resolve_force_run_output_dirs():
 
 
 def _emit_cli_audit(message):
+    line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - pixiv-backup.cli - INFO - {message}"
+    for output_dir in _resolve_force_run_output_dirs():
+        try:
+            log_dir = Path(output_dir) / "data" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / f"pixiv-backup-{datetime.now().strftime('%Y%m%d')}.log"
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
     try:
         if shutil.which("logger"):
             subprocess.run(["logger", "-t", "pixiv-backup.cli", message], check=False)
     except Exception:
         pass
+
+
+def _sanitize_event_value(value):
+    text = str(value)
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = " ".join(text.split())
+    return text if text else "-"
+
+
+def _event_line(event, **fields):
+    parts = [f"event={_sanitize_event_value(event)}"]
+    for key, value in fields.items():
+        parts.append(f"{_sanitize_event_value(key)}={_sanitize_event_value(value)}")
+    return " ".join(parts)
 
 
 def _touch_force_run_flag():

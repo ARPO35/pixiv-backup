@@ -82,6 +82,7 @@ function action_status()
     
     -- 获取输出目录
     local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
+    write_luci_audit(output_dir, "controller", "status", "ok", "query_status")
     
     -- 获取统计数据
     local db_path = output_dir .. "/data/pixiv.db"
@@ -133,6 +134,7 @@ function action_logs()
     local uci = require("luci.model.uci").cursor()
     local main = uci:get_all("pixiv-backup", "settings")
     local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
+    write_luci_audit(output_dir, "controller", "logs", "ok", "query_logs")
     local latest_log = sys.exec("ls -t '" .. output_dir .. "/data/logs/'pixiv-backup-*.log 2>/dev/null | head -n 1")
     latest_log = latest_log and latest_log:gsub("%s+$", "")
 
@@ -152,7 +154,7 @@ function action_start()
     local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
     local rc = sys.call("pixiv-backup start --force-run >/tmp/pixiv-backup-start.log 2>&1")
     local result = fs.readfile("/tmp/pixiv-backup-start.log") or ""
-    write_luci_audit(output_dir, "controller", "start", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
+    write_luci_audit(output_dir, "controller", "start_force_run", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
     http.prepare_content("text/plain; charset=utf-8")
     http.write(result ~= "" and result or "已请求立即开始备份")
 end
