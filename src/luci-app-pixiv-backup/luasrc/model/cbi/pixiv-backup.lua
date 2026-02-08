@@ -1,7 +1,6 @@
 local fs = require("nixio.fs")
 local sys = require("luci.sys")
 local uci = require("luci.model.uci").cursor()
-local jsonc = require("luci.jsonc")
 local util = require("luci.util")
 local http = require("luci.http")
 local dispatcher = require("luci.dispatcher")
@@ -130,68 +129,6 @@ low_speed_interval_seconds.datatype = "float"
 status_section = m:section(TypedSection, "_dummy", "服务状态")
 status_section.anonymous = true
 status_section.template = "cbi/nullsection"
-
-local function read_runtime_status()
-    local output_dir = uci:get("pixiv-backup", "settings", "output_dir") or "/mnt/sda1/pixiv-backup"
-    local status_file = output_dir .. "/data/status.json"
-    if not fs.access(status_file) then
-        return {}
-    end
-    local content = fs.readfile(status_file)
-    if not content or content == "" then
-        return {}
-    end
-    local parsed = jsonc.parse(content)
-    return parsed or {}
-end
-
-local service_status = status_section:option(DummyValue, "_status", "服务状态")
-service_status.rawhtml = true
-service_status.cfgvalue = function(self, section)
-    if sys.call("/etc/init.d/pixiv-backup running >/dev/null 2>&1") == 0 then
-        return '<span style="color: green; font-weight: bold;">● 运行中</span>'
-    else
-        return '<span style="color: red; font-weight: bold;">● 已停止</span>'
-    end
-end
-
-local runtime_state = status_section:option(DummyValue, "_runtime_state", "当前任务状态")
-runtime_state.cfgvalue = function(self, section)
-    local data = read_runtime_status()
-    return data.state or "unknown"
-end
-
-local runtime_progress = status_section:option(DummyValue, "_runtime_progress", "本轮进度")
-runtime_progress.cfgvalue = function(self, section)
-    local data = read_runtime_status()
-    local total = tonumber(data.processed_total or 0) or 0
-    local success = tonumber(data.success or 0) or 0
-    local skipped = tonumber(data.skipped or 0) or 0
-    local failed = tonumber(data.failed or 0) or 0
-    return string.format("已处理: %d, 成功: %d, 跳过: %d, 失败: %d", total, success, skipped, failed)
-end
-
-local runtime_cooldown = status_section:option(DummyValue, "_runtime_cooldown", "冷却信息")
-runtime_cooldown.cfgvalue = function(self, section)
-    local data = read_runtime_status()
-    if data.state == "cooldown" then
-        local reason = data.cooldown_reason or "unknown"
-        local next_run_at = data.next_run_at or "-"
-        return string.format("原因: %s, 下次巡检: %s", reason, next_run_at)
-    end
-    return "无"
-end
-
-local runtime_errors = status_section:option(DummyValue, "_runtime_errors", "最近错误")
-runtime_errors.rawhtml = true
-runtime_errors.cfgvalue = function(self, section)
-    local data = read_runtime_status()
-    local err = data.last_error
-    if not err or err == "" then
-        return "<pre>无</pre>"
-    end
-    return "<pre>" .. util.pcdata(err) .. "</pre>"
-end
 
 local live_panel = status_section:option(DummyValue, "_live_panel", "实时状态（1秒自动同步）")
 live_panel.rawhtml = true
