@@ -617,14 +617,43 @@ def _print_tail_from_file(log_file, lines):
 
 def _follow_file_logs(log_dir, log_file):
     current_file = log_file
-    stream = open(current_file, "r", encoding="utf-8", errors="replace")
-    stream.seek(0, os.SEEK_END)
+    stream = None
+    waiting_for_new_file = False
+    announced_missing = False
+
+    try:
+        stream = open(current_file, "r", encoding="utf-8", errors="replace")
+        stream.seek(0, os.SEEK_END)
+    except OSError:
+        stream = None
 
     try:
         while True:
+            if stream is None:
+                latest = _latest_log_file(log_dir)
+                if latest:
+                    current_file = latest
+                    try:
+                        stream = open(current_file, "r", encoding="utf-8", errors="replace")
+                        stream.seek(0, os.SEEK_END)
+                        print(f"\n[log] 已切换到新日志文件: {current_file}", flush=True)
+                        waiting_for_new_file = False
+                        announced_missing = False
+                        continue
+                    except OSError:
+                        stream = None
+                if not announced_missing:
+                    print("\n[log] 当前日志文件已删除，等待新日志文件...", flush=True)
+                    announced_missing = True
+                waiting_for_new_file = True
+                time.sleep(1)
+                continue
+
             line = stream.readline()
             if line:
                 print(line, end="", flush=True)
+                if waiting_for_new_file:
+                    waiting_for_new_file = False
                 continue
 
             # 检测日志轮转，自动切换到最新文件
@@ -635,6 +664,15 @@ def _follow_file_logs(log_dir, log_file):
                 stream = open(current_file, "r", encoding="utf-8", errors="replace")
                 stream.seek(0, os.SEEK_END)
                 print(f"\n[log] 已切换到新日志文件: {current_file}", flush=True)
+                continue
+
+            # 当前日志文件被删除：停止读取旧句柄，等待新文件
+            if not current_file.exists():
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                stream = None
                 continue
 
             # 检测文件被截断，回到文件开头继续追踪
@@ -650,7 +688,8 @@ def _follow_file_logs(log_dir, log_file):
         print("\n[log] 已停止日志追踪")
         return EXIT_OK
     finally:
-        stream.close()
+        if stream is not None:
+            stream.close()
 
 
 def _print_tail_from_syslog(lines):
