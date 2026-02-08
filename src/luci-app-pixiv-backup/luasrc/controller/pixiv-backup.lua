@@ -99,7 +99,6 @@ function action_status()
     if du and du ~= "" then
         result.stats.storage_used = du:gsub("%s+", "")
     end
-    end
     
     -- 获取最后运行时间
     local last_run_file = output_dir .. "/data/last_run.txt"
