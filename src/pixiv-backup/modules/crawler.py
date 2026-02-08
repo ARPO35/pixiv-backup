@@ -27,12 +27,14 @@ class PixivCrawler:
         self.low_speed_interval_seconds = self.config.get_low_speed_interval_seconds()
         self.interval_jitter_ms = self.config.get_interval_jitter_ms()
         self.task_queue_file = self.config.get_data_dir() / "task_queue.json"
+        self.scan_cursor_file = self.config.get_data_dir() / "scan_cursor.json"
         self._log_event(
             "crawler_init",
             high_speed_queue_size=self.high_speed_queue_size,
             low_speed_interval_seconds=self.low_speed_interval_seconds,
             interval_jitter_ms=self.interval_jitter_ms,
             task_queue_file=self.task_queue_file,
+            scan_cursor_file=self.scan_cursor_file,
         )
 
     def _event_line(self, event, **fields):
@@ -226,6 +228,70 @@ class PixivCrawler:
         with open(self.task_queue_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
+    def _default_scan_cursor(self):
+        return {
+            "version": 1,
+            "updated_at": self._now_str(),
+            "bookmarks": {},
+            "following": {
+                "authors": {},
+            },
+        }
+
+    def _load_scan_cursor(self):
+        if not self.scan_cursor_file.exists():
+            return self._default_scan_cursor()
+        try:
+            with open(self.scan_cursor_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return self._default_scan_cursor()
+            if not isinstance(data.get("bookmarks"), dict):
+                data["bookmarks"] = {}
+            if not isinstance(data.get("following"), dict):
+                data["following"] = {"authors": {}}
+            if not isinstance(data["following"].get("authors"), dict):
+                data["following"]["authors"] = {}
+            if "version" not in data:
+                data["version"] = 1
+            return data
+        except Exception as e:
+            self._log_event("scan_cursor_load_error", error=e)
+            return self._default_scan_cursor()
+
+    def _save_scan_cursor(self, cursor):
+        payload = cursor if isinstance(cursor, dict) else self._default_scan_cursor()
+        payload["version"] = 1
+        payload["updated_at"] = self._now_str()
+        self.scan_cursor_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.scan_cursor_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    def _parse_pixiv_datetime(self, value):
+        if not value:
+            return None
+        try:
+            text = str(value).replace("Z", "+00:00")
+            return datetime.fromisoformat(text)
+        except Exception:
+            return None
+
+    def _is_following_order_unreliable(self, illusts):
+        seen_ids = set()
+        prev_dt = None
+        for illust in illusts or []:
+            illust_id = illust.get("id")
+            if illust_id in seen_ids:
+                return True
+            seen_ids.add(illust_id)
+
+            current_dt = self._parse_pixiv_datetime(illust.get("create_date"))
+            if prev_dt is not None and current_dt is not None and current_dt > prev_dt:
+                return True
+            if current_dt is not None:
+                prev_dt = current_dt
+        return False
+
     def _upsert_candidate(self, candidates, illust, is_bookmarked, is_following_author):
         illust_id = int(illust["id"])
         item = candidates.get(illust_id)
@@ -239,7 +305,7 @@ class PixivCrawler:
         item["is_bookmarked"] = bool(item.get("is_bookmarked", False) or is_bookmarked)
         item["is_following_author"] = bool(item.get("is_following_author", False) or is_following_author)
 
-    def _scan_bookmarks(self, user_id, candidates, full_scan=False):
+    def _scan_bookmarks(self, user_id, candidates, full_scan=False, scan_cursor=None):
         stats = {
             "scanned": 0,
             "filtered": 0,
@@ -260,6 +326,8 @@ class PixivCrawler:
                 except Exception:
                     continue
         self._log_event("scan_start", source="bookmarks", user_id=user_id)
+        first_seen_illust_id = None
+        first_seen_create_date = None
         stop_scan = False
         while True:
             if self._should_stop():
@@ -291,6 +359,9 @@ class PixivCrawler:
 
             illusts = page_result.get("illusts", [])
             self._log_event("scan_page", source="bookmarks", page_size=len(illusts), next_url=bool(page_result.get("next_url")))
+            if first_seen_illust_id is None and len(illusts) > 0:
+                first_seen_illust_id = int(illusts[0].get("id"))
+                first_seen_create_date = illusts[0].get("create_date")
             for illust in illusts:
                 if self._should_stop():
                     stats["stop_requested"] = True
@@ -340,9 +411,17 @@ class PixivCrawler:
                 break
 
         self._log_event("scan_finish", source="bookmarks", scanned=stats["scanned"], filtered=stats["filtered"], rate_limited=stats["rate_limited"])
+        if isinstance(scan_cursor, dict):
+            scan_cursor["bookmarks"] = {
+                "full_scan": bool(full_scan),
+                "incremental_stopped": bool(stats.get("incremental_stopped", False)),
+                "latest_seen_illust_id": first_seen_illust_id,
+                "latest_seen_create_date": first_seen_create_date,
+                "updated_at": self._now_str(),
+            }
         return stats
 
-    def _scan_following(self, user_id, candidates):
+    def _scan_following(self, user_id, candidates, full_scan=False, scan_cursor=None):
         stats = {
             "scanned": 0,
             "filtered": 0,
@@ -389,6 +468,15 @@ class PixivCrawler:
                 break
 
         self._log_event("following_users_loaded", user_count=len(following_users))
+        authors_cursor = {}
+        if isinstance(scan_cursor, dict):
+            following_data = scan_cursor.get("following", {})
+            if isinstance(following_data, dict) and isinstance(following_data.get("authors"), dict):
+                authors_cursor = following_data.get("authors")
+            else:
+                scan_cursor["following"] = {"authors": {}}
+                authors_cursor = scan_cursor["following"]["authors"]
+
         for follow_user_id in following_users:
             if self._should_stop():
                 stats["stop_requested"] = True
@@ -411,11 +499,32 @@ class PixivCrawler:
 
             illusts = result.get("illusts", [])
             self._log_event("scan_page", source="following", follow_user_id=follow_user_id, page_size=len(illusts))
+            cursor_key = str(follow_user_id)
+            author_cursor = authors_cursor.get(cursor_key, {}) if isinstance(authors_cursor, dict) else {}
+            stop_illust_id = author_cursor.get("latest_seen_illust_id")
+            use_incremental = not full_scan
+            if use_incremental and self._is_following_order_unreliable(illusts):
+                use_incremental = False
+                self._log_event("scan_order_unreliable_fallback", source="following", follow_user_id=follow_user_id, reason="non_desc_order_or_duplicate")
+
+            latest_seen_illust_id = None
+            latest_seen_create_date = None
+            if len(illusts) > 0:
+                latest_seen_illust_id = int(illusts[0].get("id"))
+                latest_seen_create_date = illusts[0].get("create_date")
+
             for illust in illusts:
                 if self._should_stop():
                     stats["stop_requested"] = True
                     self._log_event("scan_stopped", source="following", reason="stop_requested")
                     break
+                if use_incremental and stop_illust_id is not None:
+                    try:
+                        if int(illust.get("id")) == int(stop_illust_id):
+                            self._log_event("scan_incremental_stop", source="following", follow_user_id=follow_user_id, stop_illust_id=stop_illust_id)
+                            break
+                    except Exception:
+                        pass
                 stats["scanned"] += 1
                 should_download, reason = self.config.should_download_illust(illust)
                 if not should_download:
@@ -423,6 +532,13 @@ class PixivCrawler:
                     self._log_event("scan_filtered", source="following", illust_id=illust.get("id"), reason=reason)
                     continue
                 self._upsert_candidate(candidates, illust, is_bookmarked=False, is_following_author=True)
+
+            if isinstance(authors_cursor, dict):
+                authors_cursor[cursor_key] = {
+                    "latest_seen_illust_id": latest_seen_illust_id,
+                    "latest_seen_create_date": latest_seen_create_date,
+                    "updated_at": self._now_str(),
+                }
 
             if stats["rate_limited"]:
                 break
@@ -801,9 +917,10 @@ class PixivCrawler:
 
         candidates = {}
         scan_errors = []
+        scan_cursor = self._load_scan_cursor()
 
         if download_mode in ["bookmarks", "both"]:
-            bookmark_scan = self._scan_bookmarks(user_id, candidates, full_scan=full_scan)
+            bookmark_scan = self._scan_bookmarks(user_id, candidates, full_scan=full_scan, scan_cursor=scan_cursor)
             if bookmark_scan.get("last_error"):
                 scan_errors.append(bookmark_scan.get("last_error"))
             if bookmark_scan.get("rate_limited"):
@@ -812,13 +929,15 @@ class PixivCrawler:
                 stats["stop_requested"] = True
 
         if download_mode in ["following", "both"] and not stats.get("rate_limited") and not stats.get("stop_requested"):
-            following_scan = self._scan_following(user_id, candidates)
+            following_scan = self._scan_following(user_id, candidates, full_scan=full_scan, scan_cursor=scan_cursor)
             if following_scan.get("last_error"):
                 scan_errors.append(following_scan.get("last_error"))
             if following_scan.get("rate_limited"):
                 stats["rate_limited"] = True
             if following_scan.get("stop_requested"):
                 stats["stop_requested"] = True
+
+        self._save_scan_cursor(scan_cursor)
 
         if scan_errors:
             stats["last_error"] = scan_errors[-1]

@@ -27,6 +27,7 @@
 └── data/
     ├── pixiv.db                # SQLite（可选读取）
     ├── task_queue.json         # 扫描构建的下载任务队列
+    ├── scan_cursor.json        # 扫描游标（收藏/关注增量断点）
     ├── status.json             # 运行态
     ├── last_run.txt            # 最后完成时间（可选）
     ├── run_history.json        # 运行历史（可选）
@@ -238,6 +239,38 @@ YYYY-MM-DD HH:MM:SS - pixiv-backup.audit - INFO - event=luci_action source=<cont
 - `failed` 任务会按 `next_retry_at` 延后重试。
 - `permanent_failed` 表示自动重试已终止（当前策略：失效作品连续失败达到阈值）。
 - 前端可基于该文件展示“排队中/失败重试中”状态。
+
+## 8.2 扫描游标（scan_cursor.json）
+
+路径：`data/scan_cursor.json`
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-02-08 12:00:00",
+  "bookmarks": {
+    "full_scan": false,
+    "incremental_stopped": true,
+    "latest_seen_illust_id": 12345678,
+    "latest_seen_create_date": "2026-02-08T11:00:00+09:00",
+    "updated_at": "2026-02-08 12:00:00"
+  },
+  "following": {
+    "authors": {
+      "55486255": {
+        "latest_seen_illust_id": 138914837,
+        "latest_seen_create_date": "2026-02-08T10:20:00+09:00",
+        "updated_at": "2026-02-08 12:00:00"
+      }
+    }
+  }
+}
+```
+
+说明：
+
+- 收藏采用“连续已存在阈值”增量停止时，会刷新 `bookmarks` 游标信息。
+- 关注采用“按作者游标”增量；若检测作者返回顺序异常，该作者会自动回退全量扫描。
 
 ## 9. 前端实现建议（最小读取流程）
 
