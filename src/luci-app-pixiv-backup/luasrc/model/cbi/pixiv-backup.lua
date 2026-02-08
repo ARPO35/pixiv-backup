@@ -4,6 +4,7 @@ local uci = require("luci.model.uci").cursor()
 local jsonc = require("luci.jsonc")
 local util = require("luci.util")
 local http = require("luci.http")
+local dispatcher = require("luci.dispatcher")
 
 local function _norm(v)
     local s = tostring(v or "-")
@@ -194,6 +195,64 @@ runtime_errors.cfgvalue = function(self, section)
         return "<pre>无</pre>"
     end
     return "<pre>" .. util.pcdata(err) .. "</pre>"
+end
+
+local live_panel = status_section:option(DummyValue, "_live_panel", "实时状态（1秒自动同步）")
+live_panel.rawhtml = true
+live_panel.cfgvalue = function(self, section)
+    local status_url = dispatcher.build_url("admin", "services", "pixiv-backup", "status")
+    return string.format([[
+<div class="cbi-value">
+  <div class="cbi-value-field">
+    <div>服务状态: <span id="pb-live-service-status">-</span></div>
+    <div>当前任务状态: <span id="pb-live-runtime-state">-</span></div>
+    <div>本轮进度: <span id="pb-live-runtime-progress">-</span></div>
+    <div>冷却信息: <span id="pb-live-runtime-cooldown">-</span></div>
+    <div>总共已处理: <span id="pb-live-total-processed">0</span></div>
+    <div>队列汇总: <span id="pb-live-queue-summary">total=0 pending=0 running=0 failed=0 done=0</span></div>
+    <div>最近错误: <span id="pb-live-last-error">无</span></div>
+  </div>
+</div>
+<script>
+(function() {
+  if (window.__pixivBackupLiveBound) return;
+  window.__pixivBackupLiveBound = true;
+  var statusUrl = '%s';
+
+  function setText(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = (value === undefined || value === null || value === '') ? '-' : String(value);
+  }
+
+  function updateStatus() {
+    fetch(statusUrl, { cache: 'no-store' })
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) {
+        var runtime = data.runtime || {};
+        var stats = data.stats || {};
+        var queue = data.queue_summary || {};
+        setText('pb-live-service-status', data.service_status || '-');
+        setText('pb-live-runtime-state', runtime.phase ? (runtime.state + '/' + runtime.phase) : (runtime.state || '-'));
+        setText('pb-live-runtime-progress', '已处理=' + (runtime.processed_total || 0) + ' 成功=' + (runtime.success || 0) + ' 跳过=' + (runtime.skipped || 0) + ' 失败=' + (runtime.failed || 0));
+        if (runtime.state === 'cooldown') {
+          setText('pb-live-runtime-cooldown', '原因=' + (runtime.cooldown_reason || '-') + ' 下次=' + (runtime.next_run_at || '-'));
+        } else {
+          setText('pb-live-runtime-cooldown', '无');
+        }
+        setText('pb-live-total-processed', stats.total_processed_all || 0);
+        setText('pb-live-queue-summary', 'total=' + (queue.total || 0) + ' pending=' + (queue.pending || 0) + ' running=' + (queue.running || 0) + ' failed=' + (queue.failed || 0) + ' done=' + (queue.done || 0));
+        setText('pb-live-last-error', runtime.last_error || '无');
+      })
+      .catch(function() {
+        setText('pb-live-runtime-state', 'status接口读取失败');
+      });
+  }
+
+  updateStatus();
+  setInterval(updateStatus, 1000);
+})();
+</script>
+]], status_url)
 end
 
 local start_btn = status_section:option(Button, "_start", "立即开始备份")

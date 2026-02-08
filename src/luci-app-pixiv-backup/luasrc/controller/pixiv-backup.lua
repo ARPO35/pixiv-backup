@@ -64,9 +64,18 @@ function action_status()
         recent_errors = {},
         stats = {
             total_downloaded = 0,
+            total_processed_all = 0,
             last_24h = 0,
             storage_used = "0MB"
-        }
+        },
+        queue_summary = {
+            total = 0,
+            pending = 0,
+            running = 0,
+            failed = 0,
+            done = 0,
+            next_retry_at = nil
+        },
     }
     
     -- 检查服务状态
@@ -82,7 +91,6 @@ function action_status()
     
     -- 获取输出目录
     local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
-    write_luci_audit(output_dir, "controller", "status", "ok", "query_status")
     
     -- 获取统计数据
     local db_path = output_dir .. "/data/pixiv.db"
@@ -90,6 +98,7 @@ function action_status()
         local count = sys.exec("sqlite3 '" .. db_path .. "' 'SELECT COUNT(*) FROM illusts;' 2>/dev/null")
         if count and count ~= "" then
             result.stats.total_downloaded = tonumber(count:gsub("%s+", "")) or 0
+            result.stats.total_processed_all = result.stats.total_downloaded
         end
         
         -- 计算存储使用量
@@ -125,6 +134,50 @@ function action_status()
     if result.runtime and result.runtime.last_error and result.runtime.last_error ~= "" then
         table.insert(result.recent_errors, result.runtime.last_error)
     end
+
+    -- 队列信息（优先使用 runtime 中的汇总，缺失时读取 task_queue.json）
+    local rp = tonumber(result.runtime.queue_pending or 0) or 0
+    local rr = tonumber(result.runtime.queue_running or 0) or 0
+    local rf = tonumber(result.runtime.queue_failed or 0) or 0
+    local rd = tonumber(result.runtime.queue_done or 0) or 0
+    local runtime_total = rp + rr + rf + rd
+    if runtime_total > 0 then
+        result.queue_summary.pending = rp
+        result.queue_summary.running = rr
+        result.queue_summary.failed = rf
+        result.queue_summary.done = rd
+        result.queue_summary.total = runtime_total
+    else
+        local queue_file = output_dir .. "/data/task_queue.json"
+        if fs.access(queue_file) then
+            local content = fs.readfile(queue_file)
+            if content and content ~= "" then
+                local parsed = jsonc.parse(content)
+                local items = parsed and parsed.items or {}
+                local next_retry = nil
+                if type(items) == "table" then
+                    for _, item in ipairs(items) do
+                        local status = item.status or ""
+                        result.queue_summary.total = result.queue_summary.total + 1
+                        if status == "pending" then
+                            result.queue_summary.pending = result.queue_summary.pending + 1
+                        elseif status == "running" then
+                            result.queue_summary.running = result.queue_summary.running + 1
+                        elseif status == "failed" then
+                            result.queue_summary.failed = result.queue_summary.failed + 1
+                            local nra = item.next_retry_at
+                            if nra and nra ~= "" and (not next_retry or nra < next_retry) then
+                                next_retry = nra
+                            end
+                        elseif status == "done" then
+                            result.queue_summary.done = result.queue_summary.done + 1
+                        end
+                    end
+                end
+                result.queue_summary.next_retry_at = next_retry
+            end
+        end
+    end
     
     http.prepare_content("application/json")
     http.write_json(result)
@@ -134,7 +187,6 @@ function action_logs()
     local uci = require("luci.model.uci").cursor()
     local main = uci:get_all("pixiv-backup", "settings")
     local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
-    write_luci_audit(output_dir, "controller", "logs", "ok", "query_logs")
     local latest_log = sys.exec("ls -t '" .. output_dir .. "/data/logs/'pixiv-backup-*.log 2>/dev/null | head -n 1")
     latest_log = latest_log and latest_log:gsub("%s+$", "")
 
