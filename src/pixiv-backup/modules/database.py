@@ -248,6 +248,33 @@ class DatabaseManager:
 
         self._execute_with_recovery(_op)
 
+    def mark_as_not_downloaded(self, illust_id):
+        """将作品标记为未下载（用于访问受限/占位图等场景）"""
+
+        def _op():
+            conn = self._connect()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    UPDATE illusts
+                    SET downloaded = 0,
+                        download_path = NULL,
+                        downloaded_at = NULL,
+                        updated_at = ?
+                    WHERE illust_id = ?
+                    ''',
+                    (
+                        datetime.now().isoformat(),
+                        illust_id,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        self._execute_with_recovery(_op)
+
     def record_download_error(self, illust_id, error_message):
         """记录下载错误"""
 

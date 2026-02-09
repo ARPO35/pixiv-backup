@@ -97,6 +97,7 @@
 | `original_url` | string | 作品页 URL（`https://www.pixiv.net/artworks/<id>`） |
 | `is_bookmarked` | boolean | 是否来自收藏扫描 |
 | `is_following_author` | boolean | 是否来自关注作者扫描 |
+| `is_access_limited` | boolean | 是否为访问受限占位资源（如 `limit_unknown`） |
 
 ## 4.2 真实样例（节选）
 
@@ -121,7 +122,8 @@
     "large": "https://i.pximg.net/..."
   },
   "download_time": "2026-02-08 01:52:50",
-  "original_url": "https://www.pixiv.net/artworks/101612396"
+  "original_url": "https://www.pixiv.net/artworks/101612396",
+  "is_access_limited": false
 }
 ```
 
@@ -132,6 +134,7 @@
 - `page_count` 是理论页数，不等于本地实际下载文件数；请以文件系统结果为准。
 - `caption` 可能含 HTML，渲染前请做 XSS 处理或转纯文本。
 - 时间字段建议统一转换为本地时区展示。
+- 若 `is_access_limited=true`，该作品应从默认画廊主流中排除（通常显示到“异常/受限”分组）。
 
 ## 5. 运行状态文件（status.json）
 
@@ -198,6 +201,7 @@ YYYY-MM-DD HH:MM:SS - pixiv-backup.audit - INFO - event=luci_action source=<cont
 用途建议：
 
 - 前端只读统计可用；核心展示仍建议以 `metadata/*.json + img/` 为主，避免数据库 schema 演化带来的兼容问题。
+- 不建议仅依赖 `illusts.downloaded=1` 作为“可展示”判断，需同时过滤 `is_access_limited=true`。
 
 ## 8. 兼容性与历史迁移
 
@@ -279,6 +283,17 @@ YYYY-MM-DD HH:MM:SS - pixiv-backup.audit - INFO - event=luci_action source=<cont
 3. 列表页优先显示每个作品的首张本地图片（存在 `p0` 时优先 `p0`）。
 4. 详情页显示 metadata 字段，并按本地文件顺序展示所有页。
 5. 状态栏读取 `data/status.json` + `pixiv-backup.audit` 日志显示运行态与操作记录。
+
+默认筛选建议（避免受限占位图进入主流）：
+
+- 列表默认条件：`downloaded=true AND is_access_limited!=true`。
+- 如需排障页，再单独展示 `is_access_limited=true` 作品。
+
+全量重建索引建议（当规则变更后）：
+
+1. 清理前端自身索引缓存（如 `index.sqlite`/内存快照）。
+2. 重新全量遍历 `metadata/*.json` 与 `img/` 建索引。
+3. 首轮完成后再切回增量监听（`mtime`）。
 
 ## 10. 安全注意事项
 

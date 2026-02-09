@@ -656,6 +656,8 @@ class PixivCrawler:
             "已删除",
             "无权限查看",
             "not visible",
+            "limit_unknown",
+            "access_limited",
         ]
         network_keywords = [
             "timeout",
@@ -981,6 +983,17 @@ class PixivCrawler:
             # 保存到数据库
             self.database.save_illust(illust)
 
+            # 访问受限作品：标记元数据并返回失败，不进入 downloaded 语义
+            if self.downloader.is_access_limited_illust(illust):
+                limited_copy = self._json_safe(illust)
+                limited_copy["is_access_limited"] = True
+                self.downloader.save_metadata_snapshot(limited_copy, is_access_limited=True)
+                self.database.mark_as_not_downloaded(illust_id)
+                limited_error = self._with_illust_context(illust_id, "access_limited(limit_unknown)")
+                self.database.record_download_error(illust_id, limited_error)
+                self._log_event("download_finish", illust_id=illust_id, status="failed", error=limited_error, access_limited=True)
+                return {"success": False, "error": limited_error, "http_status": 403}
+
             # 根据类型下载
             if illust_type == "ugoira":
                 # 动图需要特殊处理
@@ -1053,6 +1066,8 @@ class PixivCrawler:
                 image_url = image_urls.get("original") or image_urls.get("large")
                 if not image_url:
                     continue
+                if self.downloader.is_access_limited_url(image_url):
+                    return {"success": False, "error": f"page_index={idx} image_url={image_url} access_limited(limit_unknown)", "http_status": 403}
 
                 r = self.downloader.download_image(image_url, illust, page_index=idx)
                 if r.get("stopped", False):
@@ -1082,6 +1097,8 @@ class PixivCrawler:
             image_url = illust.get("image_urls", {}).get("original") or illust.get("image_urls", {}).get("large")
         if not image_url:
             return {"success": False, "error": "未找到可下载图片链接"}
+        if self.downloader.is_access_limited_url(image_url):
+            return {"success": False, "error": f"page_index=0 image_url={image_url} access_limited(limit_unknown)", "http_status": 403}
 
         result = self.downloader.download_image(image_url, illust)
         if result.get("stopped", False):

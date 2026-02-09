@@ -55,6 +55,59 @@ class DownloadManager:
         except Exception:
             return None
         return None
+
+    def is_access_limited_url(self, url):
+        text = str(url or "").lower()
+        if not text:
+            return False
+        markers = (
+            "limit_unknown",
+            "limit_manga",
+            "/common/images/limit_",
+            "s.pximg.net/common/images/limit_",
+        )
+        return any(marker in text for marker in markers)
+
+    def is_access_limited_illust(self, illust_info):
+        if not isinstance(illust_info, dict):
+            return False
+
+        def _check_url(candidate):
+            return self.is_access_limited_url(candidate)
+
+        image_urls = illust_info.get("image_urls", {})
+        if isinstance(image_urls, dict):
+            for key in ("original", "large", "medium", "square_medium"):
+                if _check_url(image_urls.get(key)):
+                    return True
+
+        single = illust_info.get("meta_single_page", {})
+        if isinstance(single, dict):
+            if _check_url(single.get("original_image_url")):
+                return True
+
+        meta_pages = illust_info.get("meta_pages") or []
+        if isinstance(meta_pages, list):
+            for page in meta_pages:
+                if not isinstance(page, dict):
+                    continue
+                page_urls = page.get("image_urls", {})
+                if isinstance(page_urls, dict):
+                    for key in ("original", "large", "medium"):
+                        if _check_url(page_urls.get(key)):
+                            return True
+
+        ugoira_zip = illust_info.get("ugoira_zip_url")
+        if _check_url(ugoira_zip):
+            return True
+
+        return False
+
+    def save_metadata_snapshot(self, illust_info, is_access_limited=None):
+        metadata = (illust_info or {}).copy()
+        if is_access_limited is not None:
+            metadata["is_access_limited"] = bool(is_access_limited)
+        return self._save_metadata(metadata)
         
     def download_image(self, url, illust_info, page_index=None):
         """下载图片"""
@@ -62,6 +115,16 @@ class DownloadManager:
             illust_id = illust_info["id"]
             if self._should_stop():
                 return {"success": False, "stopped": True, "error": "stop_requested"}
+            if self.is_access_limited_url(url):
+                err = f"page_index={page_index if page_index is not None else 0} image_url={url} access_limited(limit_unknown)"
+                self._log_event(
+                    "file_download_finish",
+                    illust_id=illust_id,
+                    page_index=page_index if page_index is not None else "-",
+                    status="failed",
+                    error=err,
+                )
+                return {"success": False, "error": err, "http_status": 403}
             # 创建保存路径
             save_path = self._get_save_path(url, illust_info, page_index)
             self._ensure_parent_dir(save_path)
@@ -156,6 +219,8 @@ class DownloadManager:
         """检查作品是否完整下载（多图按页检查）"""
         illust_id = int(illust_info["id"])
         illust_type = illust_info.get("type", "illust")
+        if self.is_access_limited_illust(illust_info):
+            return False
 
         if illust_type == "ugoira":
             zip_path = self._get_ugoira_save_path(illust_info).with_suffix(".zip")
@@ -246,6 +311,9 @@ class DownloadManager:
             "original_url": f"https://www.pixiv.net/artworks/{illust_id}",
             "is_bookmarked": bool(illust_info.get("is_bookmarked", False)),
             "is_following_author": bool(illust_info.get("is_following_author", False)),
+            "is_access_limited": bool(
+                illust_info.get("is_access_limited", False) or self.is_access_limited_illust(illust_info)
+            ),
         }
         
         # 保存JSON文件
@@ -279,6 +347,10 @@ class DownloadManager:
                 err = f"没有找到动图ZIP文件(available_keys={available_keys})"
                 self._log_event("file_download_finish", illust_id=illust_id, page_index="-", status="failed", error=err)
                 return {"success": False, "error": err}
+            if self.is_access_limited_url(zip_url):
+                err = f"ugoira_zip_url={zip_url} access_limited(limit_unknown)"
+                self._log_event("file_download_finish", illust_id=illust_id, page_index="-", status="failed", error=err)
+                return {"success": False, "error": err, "http_status": 403}
             self._log_event("file_download_start", illust_id=illust_id, page_index="-", url=zip_url, path=zip_path, zip_source=zip_source)
                 
             # 下载ZIP文件

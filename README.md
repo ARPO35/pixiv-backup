@@ -115,10 +115,12 @@ LuCI 实时状态说明：
   "download_time": "2023-12-01 14:30:00",
   "original_url": "https://www.pixiv.net/artworks/12345678",
   "is_bookmarked": true,
-  "is_following_author": false
+  "is_following_author": false,
+  "is_access_limited": false
 }
 ```
 说明：当前为开发阶段数据结构，默认不做旧 metadata 兼容迁移。
+前端默认列表建议过滤 `is_access_limited=true`，避免将 `limit_unknown` 占位资源当作可展示主图。
 
 ## 命令行工具
 
