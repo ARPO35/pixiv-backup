@@ -124,6 +124,18 @@ LuCI 实时状态说明：
 前端默认列表建议过滤 `is_access_limited=true`，避免将 `limit_unknown` 占位资源当作可展示主图。
 收藏列表建议优先按 `bookmark_order` 倒序（`DESC`）显示，`bookmark_order` 越大表示收藏越新。
 
+### 收藏序号回填脚本（一次性）
+当你需要给已有 `metadata/*.json` 批量补齐 `bookmark_order` 时，可运行：
+```bash
+python tools/backfill_bookmark_order.py \
+  --output-dir /mnt/sda1/pixiv-backup \
+  --user-id 你的用户ID
+```
+说明：
+- 脚本会全量拉取收藏列表（最新在前），按“最旧=0、最新最大”回填 `bookmark_order`。
+- 同时会更新 `metadata` 与 `data/task_queue.json` 中的 `is_bookmarked/bookmark_order`。
+- 可先加 `--dry-run` 预览变更数量。
+
 ## 命令行工具
 
 ### 服务控制（统一入口）

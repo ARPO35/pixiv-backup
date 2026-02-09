@@ -300,8 +300,9 @@ YYYY-MM-DD HH:MM:SS - pixiv-backup.audit - INFO - event=luci_action source=<cont
 全量重建索引建议（当规则变更后）：
 
 1. 清理前端自身索引缓存（如 `index.sqlite`/内存快照）。
-2. 重新全量遍历 `metadata/*.json` 与 `img/` 建索引。
-3. 首轮完成后再切回增量监听（`mtime`）。
+2. 若历史 metadata 缺少 `bookmark_order`，先运行 `tools/backfill_bookmark_order.py` 回填。
+3. 重新全量遍历 `metadata/*.json` 与 `img/` 建索引。
+4. 首轮完成后再切回增量监听（`mtime`）。
 
 ## 10. 安全注意事项
 
