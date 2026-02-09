@@ -70,8 +70,7 @@ class PixivBackupService:
         # 创建目录结构
         self._create_directories()
         existing_recent_errors = self._read_runtime_status().get("recent_errors")
-        if not isinstance(existing_recent_errors, list):
-            existing_recent_errors = []
+        existing_recent_errors = self._prune_recent_errors(existing_recent_errors)
         self._write_runtime_status({
             "state": "idle",
             "phase": "init",
@@ -179,6 +178,9 @@ class PixivBackupService:
         except Exception:
             return default
 
+    def _illust_url(self, illust_id):
+        return f"https://www.pixiv.net/artworks/{illust_id}"
+
     def _get_total_processed_from_db(self):
         try:
             counts = self.database.get_illust_count()
@@ -198,30 +200,109 @@ class PixivBackupService:
             return m.group(1)
         return "-"
 
+    def _parse_error_detail(self, detail, fallback_pid="-", fallback_url=""):
+        text = str(detail or "").strip()
+        pid = str(fallback_pid or "-")
+        url = str(fallback_url or "")
+        error = text
+
+        pid_match = re.search(r"\bpid\s*[=:]\s*(\d+)\b", text, flags=re.IGNORECASE)
+        if pid_match:
+            pid = pid_match.group(1)
+
+        url_match = re.search(r"\burl\s*=\s*(\S+)", text, flags=re.IGNORECASE)
+        if url_match:
+            url = url_match.group(1).strip()
+
+        err_match = re.search(r"\berror\s*=\s*(.+)$", text, flags=re.IGNORECASE)
+        if err_match:
+            error = err_match.group(1).strip()
+
+        if not url and pid and pid != "-":
+            url = self._illust_url(pid)
+        if not error:
+            error = text or "未知错误"
+        return {
+            "pid": pid if pid else "-",
+            "url": url,
+            "error": error,
+            "detail": text,
+        }
+
+    def _normalize_recent_error_item(self, item):
+        if not isinstance(item, dict):
+            return None
+        parsed = self._parse_error_detail(
+            item.get("detail"),
+            fallback_pid=item.get("pid", "-"),
+            fallback_url=item.get("url", ""),
+        )
+        normalized = {
+            "time": str(item.get("time") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            "pid": str(parsed.get("pid", "-")),
+            "action": str(item.get("action") or "unknown"),
+            "url": str(item.get("url") or parsed.get("url") or ""),
+            "error": str(item.get("error") or parsed.get("error") or ""),
+            "detail": str(item.get("detail") or parsed.get("detail") or ""),
+        }
+        if not normalized["url"] and normalized["pid"] != "-":
+            normalized["url"] = self._illust_url(normalized["pid"])
+        if not normalized["error"]:
+            normalized["error"] = normalized["detail"] or "未知错误"
+        if not normalized["detail"]:
+            normalized["detail"] = normalized["error"]
+        return normalized
+
+    def _prune_recent_errors(self, recent_errors):
+        if not isinstance(recent_errors, list):
+            return []
+        cleaned = []
+        for raw in recent_errors:
+            item = self._normalize_recent_error_item(raw)
+            if not item:
+                continue
+            pid = str(item.get("pid", "-"))
+            if pid.isdigit():
+                try:
+                    if self.database.is_downloaded(int(pid)):
+                        continue
+                except Exception:
+                    pass
+            cleaned.append(item)
+            if len(cleaned) >= 10:
+                break
+        return cleaned
+
     def _build_recent_errors(self, action, detail):
         if not detail:
             return None
         current = self._read_runtime_status()
-        recent = current.get("recent_errors")
-        if not isinstance(recent, list):
-            recent = []
+        recent = self._prune_recent_errors(current.get("recent_errors"))
+        parsed = self._parse_error_detail(detail)
         entry = {
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "pid": self._extract_pid_from_error(detail),
+            "pid": parsed.get("pid", "-"),
             "action": str(action or "unknown"),
-            "detail": str(detail),
+            "url": parsed.get("url", ""),
+            "error": parsed.get("error", ""),
+            "detail": parsed.get("detail", str(detail)),
         }
-        if recent:
-            latest = recent[0]
-            if isinstance(latest, dict):
-                if str(latest.get("detail", "")) == entry["detail"] and str(latest.get("action", "")) == entry["action"] and str(latest.get("pid", "")) == entry["pid"]:
-                    latest["time"] = entry["time"]
-                    return recent[:10]
-        return ([entry] + recent)[:10]
+        if not entry["url"] and entry["pid"] != "-":
+            entry["url"] = self._illust_url(entry["pid"])
+
+        dedup_key = (entry["pid"], entry["action"], entry["error"])
+        kept = []
+        for item in recent:
+            key = (str(item.get("pid", "-")), str(item.get("action", "unknown")), str(item.get("error", "")))
+            if key == dedup_key:
+                continue
+            kept.append(item)
+        return ([entry] + kept)[:10]
 
     def _on_progress(self, payload):
         if not isinstance(payload, dict):
             return
+        current = self._read_runtime_status()
         patch = dict(payload)
         if "processed_total" in patch:
             run_processed = self._safe_int(patch.get("processed_total"), 0)
@@ -229,7 +310,18 @@ class PixivBackupService:
                 run_processed = 0
             patch["last_run_processed_total"] = run_processed
         patch["total_processed_all"] = self._get_total_processed_from_db()
-        if patch.get("last_error"):
+        cleaned_recent = self._prune_recent_errors(current.get("recent_errors"))
+        if cleaned_recent != current.get("recent_errors"):
+            patch["recent_errors"] = cleaned_recent
+
+        phase = str(patch.get("phase", current.get("phase", "")) or "").lower()
+        current_last_error = str(current.get("last_error") or "")
+        new_last_error = str(patch.get("last_error") or "")
+        error_phases = {"error", "scan", "download_queue", "queue_build", "run_error"}
+        should_append_error = bool(new_last_error) and phase != "done" and (
+            new_last_error != current_last_error or phase in error_phases
+        )
+        if should_append_error:
             recent_errors = self._build_recent_errors(patch.get("phase", "unknown"), patch.get("last_error"))
             if recent_errors is not None:
                 patch["recent_errors"] = recent_errors
@@ -666,12 +758,84 @@ def _print_status():
     print(f"配置完整: {'是' if config.validate_required() else '否'}")
     print(f"数据库: {db_path} ({'存在' if Path(db_path).exists() else '不存在'})")
     if runtime:
-        print(f"当前状态: {runtime.get('state', 'unknown')}")
-        print(f"当前阶段: {runtime.get('phase', 'unknown')}")
-        print(f"已处理: {runtime.get('processed_total', 0)}")
-        print(f"累计已处理: {runtime.get('total_processed_all', 0)}")
-        if runtime.get("last_error"):
-            print(f"最近错误: {runtime.get('last_error')}")
+        state = runtime.get('state', 'unknown')
+        phase = runtime.get('phase', 'unknown')
+        print("")
+        print("运行状态:")
+        print(f"- 状态: {state}")
+        print(f"- 阶段: {phase}")
+        print(f"- 本轮已处理: {runtime.get('processed_total', 0)}")
+        print(f"- 本轮成功/跳过/失败: {runtime.get('success', 0)}/{runtime.get('skipped', 0)}/{runtime.get('failed', 0)}")
+        print(f"- 累计成功下载: {runtime.get('total_processed_all', 0)}")
+
+        cooldown_reason = runtime.get("cooldown_reason")
+        next_run_at = runtime.get("next_run_at")
+        cooldown_seconds = runtime.get("cooldown_seconds")
+        print("")
+        print("冷却信息:")
+        if state == "cooldown" or cooldown_reason or next_run_at:
+            print(f"- 原因: {cooldown_reason or '-'}")
+            print(f"- 下次开始: {next_run_at or '-'}")
+            print(f"- 冷却秒数: {cooldown_seconds if cooldown_seconds is not None else '-'}")
+        else:
+            print("- 无")
+
+        queue_pending = runtime.get("queue_pending", 0)
+        queue_running = runtime.get("queue_running", 0)
+        queue_failed = runtime.get("queue_failed", 0)
+        queue_permanent_failed = runtime.get("queue_permanent_failed", 0)
+        queue_done = runtime.get("queue_done", 0)
+        queue_total = (
+            int(queue_pending or 0)
+            + int(queue_running or 0)
+            + int(queue_failed or 0)
+            + int(queue_permanent_failed or 0)
+            + int(queue_done or 0)
+        )
+        print("")
+        print("队列状态:")
+        print(f"- 总数: {queue_total}")
+        print(f"- 待处理: {queue_pending}")
+        print(f"- 运行中: {queue_running}")
+        print(f"- 失败: {queue_failed}")
+        print(f"- 永久失败: {queue_permanent_failed}")
+        print(f"- 完成: {queue_done}")
+
+        print("")
+        print("最近错误(最多10条):")
+        recent_errors = runtime.get("recent_errors")
+        if isinstance(recent_errors, list) and len(recent_errors) > 0:
+            for item in recent_errors[:10]:
+                if not isinstance(item, dict):
+                    continue
+                t = item.get("time", "-")
+                pid = item.get("pid", "-")
+                action = item.get("action", "-")
+                detail = str(item.get("detail") or "")
+                url = item.get("url", "")
+                error = item.get("error") or ""
+                if not url and detail:
+                    m_url = re.search(r"\burl\s*=\s*(\S+)", detail, flags=re.IGNORECASE)
+                    if m_url:
+                        url = m_url.group(1).strip()
+                if not error and detail:
+                    m_err = re.search(r"\berror\s*=\s*(.+)$", detail, flags=re.IGNORECASE)
+                    if m_err:
+                        error = m_err.group(1).strip()
+                    else:
+                        error = detail
+                if not url and str(pid).isdigit():
+                    url = f"https://www.pixiv.net/artworks/{pid}"
+                if not error:
+                    error = "-"
+                print(f"时间: {t}  PID: {pid}  操作: {action}  URL: {url or '-'}")
+                print(f"错误: {error}")
+                print("")
+        elif runtime.get("last_error"):
+            print(f"时间: {runtime.get('updated_at', '-')}  PID: -  操作: {phase}  URL: -")
+            print(f"错误: {runtime.get('last_error')}")
+        else:
+            print("无")
 
 
 def _latest_log_file(log_dir):

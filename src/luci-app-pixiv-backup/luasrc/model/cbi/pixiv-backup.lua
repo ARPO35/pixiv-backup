@@ -171,8 +171,23 @@ live_panel.cfgvalue = function(self, section)
       var t = (item && item.time) ? item.time : '-';
       var pid = (item && item.pid) ? item.pid : '-';
       var action = (item && item.action) ? item.action : '-';
-      var detail = (item && item.detail) ? item.detail : '-';
-      return '时间: ' + t + '  PID: ' + pid + '  操作: ' + action + '\n错误: ' + detail;
+      var url = (item && item.url) ? item.url : '';
+      var error = (item && item.error) ? item.error : '';
+      var detail = (item && item.detail) ? item.detail : '';
+      if (!url && detail) {
+        var mUrl = detail.match(/url\\s*=\\s*(\\S+)/i);
+        if (mUrl && mUrl[1]) url = mUrl[1];
+      }
+      if (!error && detail) {
+        var mErr = detail.match(/error\\s*=\\s*(.+)$/i);
+        if (mErr && mErr[1]) error = mErr[1];
+        else error = detail;
+      }
+      if (!url && /^\\d+$/.test(String(pid))) {
+        url = 'https://www.pixiv.net/artworks/' + pid;
+      }
+      if (!error) error = '-';
+      return '时间: ' + t + '  PID: ' + pid + '  操作: ' + action + '  URL: ' + (url || '-') + '\\n错误: ' + error;
     }).join('\n\n');
   }
 

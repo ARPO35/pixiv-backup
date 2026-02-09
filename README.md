@@ -55,7 +55,7 @@ pixiv-backup status
 LuCI 实时状态说明：
 - **总共已处理**：使用数据库 `illusts.downloaded=1` 的实时数量。
 - **队列汇总**：拆分展示 `total/pending/running/failed/permanent_failed/done` 六项。
-- **最近错误**：最多显示 10 条，每条两行（时间+PID+操作 / 错误详情），条目之间有空行分隔。
+- **最近错误**：最多显示 10 条，每条两行（时间+PID+操作+URL / 纯错误信息），条目之间有空行分隔。
 
 ## 目录结构
 
@@ -162,6 +162,10 @@ pixiv-backup run 20 --full-scan
 ```bash
 pixiv-backup status
 ```
+说明：
+- `本轮已处理`：当前/最近一轮处理总数（成功+跳过+失败）。
+- `累计成功下载`：数据库 `illusts.downloaded=1` 的实时数量。
+- 输出会包含冷却信息、队列六项状态和最近 10 条错误（每条两行，第一行含 URL，第二行仅错误信息）。
 
 ### 诊断与修复
 ```bash

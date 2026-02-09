@@ -46,6 +46,73 @@ local function write_luci_audit(output_dir, source, action, status, detail)
     sys.call("logger -t pixiv-backup-audit " .. util.shellquote(syslog_msg))
 end
 
+local function normalize_recent_error_item(item, fallback_time)
+    if type(item) ~= "table" then
+        return nil
+    end
+    local detail = tostring(item.detail or "")
+    local pid = tostring(item.pid or "-")
+    local action = tostring(item.action or "-")
+    local url = tostring(item.url or "")
+    local err = tostring(item.error or "")
+    local t = tostring(item.time or fallback_time or "-")
+
+    if (pid == "-" or pid == "") and detail ~= "" then
+        local m = detail:match("pid%s*=%s*(%d+)")
+        if m then
+            pid = m
+        end
+    end
+    if (url == "") and detail ~= "" then
+        local m = detail:match("url%s*=%s*(%S+)")
+        if m then
+            url = m
+        end
+    end
+    if (err == "") and detail ~= "" then
+        local m = detail:match("error%s*=%s*(.+)$")
+        if m then
+            err = m
+        else
+            err = detail
+        end
+    end
+    if url == "" and pid:match("^%d+$") then
+        url = "https://www.pixiv.net/artworks/" .. pid
+    end
+    if err == "" then
+        err = detail ~= "" and detail or "-"
+    end
+    if detail == "" then
+        detail = err
+    end
+    return {
+        time = t,
+        pid = pid ~= "" and pid or "-",
+        action = action ~= "" and action or "-",
+        url = url,
+        error = err,
+        detail = detail,
+    }
+end
+
+local function is_pid_downloaded(db_path, pid)
+    if not db_path or db_path == "" then
+        return false
+    end
+    local p = tostring(pid or "")
+    if not p:match("^%d+$") then
+        return false
+    end
+    if sys.call("command -v sqlite3 >/dev/null 2>&1") ~= 0 then
+        return false
+    end
+    local sql = "SELECT downloaded FROM illusts WHERE illust_id=" .. p .. " LIMIT 1;"
+    local cmd = "sqlite3 " .. util.shellquote(db_path) .. " " .. util.shellquote(sql) .. " 2>/dev/null"
+    local out = (sys.exec(cmd) or ""):gsub("%s+", "")
+    return out == "1"
+end
+
 function index()
     entry({"admin", "services", "pixiv-backup"}, cbi("pixiv-backup"), _("Pixiv备份"), 60).dependent = false
     entry({"admin", "services", "pixiv-backup", "status"}, call("action_status")).leaf = true
@@ -56,7 +123,9 @@ end
 
 function action_status()
     local uci = require("luci.model.uci").cursor()
-    
+    local main = uci:get_all("pixiv-backup", "settings")
+    local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
+    local db_path = output_dir .. "/data/pixiv.db"
     local result = {
         service_status = "stopped",
         config_status = "unconfigured",
@@ -86,13 +155,9 @@ function action_status()
     end
     
     -- 检查配置
-    local main = uci:get_all("pixiv-backup", "settings")
     if main and main.enabled == "1" and main.user_id and main.user_id ~= "" and main.refresh_token and main.refresh_token ~= "" then
         result.config_status = "configured"
     end
-    
-    -- 获取输出目录
-    local output_dir = main and main.output_dir or "/mnt/sda1/pixiv-backup"
     
     -- 统计存储使用量
     local du = sys.exec("du -sh '" .. output_dir .. "/img/' 2>/dev/null | cut -f1")
@@ -120,13 +185,11 @@ function action_status()
                 result.stats.total_processed_all = tonumber(parsed.total_processed_all or 0) or 0
                 if type(parsed.recent_errors) == "table" then
                     for _, item in ipairs(parsed.recent_errors) do
-                        if type(item) == "table" then
-                            table.insert(result.recent_errors, {
-                                time = tostring(item.time or parsed.updated_at or "-"),
-                                pid = tostring(item.pid or "-"),
-                                action = tostring(item.action or "-"),
-                                detail = tostring(item.detail or "-")
-                            })
+                        local normalized = normalize_recent_error_item(item, parsed.updated_at or "-")
+                        if normalized then
+                            if not is_pid_downloaded(db_path, normalized.pid) then
+                                table.insert(result.recent_errors, normalized)
+                            end
                         end
                         if #result.recent_errors >= 10 then
                             break
@@ -139,12 +202,15 @@ function action_status()
 
     -- 最近错误兼容回退（旧字段仅有 last_error）
     if #result.recent_errors == 0 and result.runtime and result.runtime.last_error and result.runtime.last_error ~= "" then
-        table.insert(result.recent_errors, {
+        local fallback = normalize_recent_error_item({
             time = tostring(result.runtime.updated_at or "-"),
             pid = "-",
             action = tostring(result.runtime.phase or "-"),
             detail = tostring(result.runtime.last_error or "-")
-        })
+        }, result.runtime.updated_at or "-")
+        if fallback then
+            table.insert(result.recent_errors, fallback)
+        end
     end
 
     -- 队列信息（优先使用 runtime 中的汇总，缺失时读取 task_queue.json）
