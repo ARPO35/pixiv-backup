@@ -267,6 +267,106 @@ class PixivCrawler:
         with open(self.scan_cursor_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
+    def _as_int(self, value):
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def _merge_bookmark_order(self, old_value, new_value):
+        old_num = self._as_int(old_value)
+        new_num = self._as_int(new_value)
+        if new_num is None:
+            return old_num
+        if old_num is None:
+            return new_num
+        return max(old_num, new_num)
+
+    def _get_metadata_bookmark_order_max(self):
+        max_order = None
+        metadata_dir = self.config.get_metadata_dir()
+        if not metadata_dir.exists():
+            return None
+
+        for metadata_path in metadata_dir.glob("*.json"):
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                order = self._as_int((data or {}).get("bookmark_order"))
+                if order is None:
+                    continue
+                max_order = order if max_order is None else max(max_order, order)
+            except Exception:
+                continue
+        return max_order
+
+    def _get_existing_bookmark_order_max(self, scan_cursor):
+        cursor_value = None
+        if isinstance(scan_cursor, dict):
+            bookmarks_data = scan_cursor.get("bookmarks")
+            if isinstance(bookmarks_data, dict):
+                cursor_value = self._as_int(bookmarks_data.get("max_bookmark_order"))
+        if cursor_value is not None:
+            return cursor_value
+
+        queue_max = None
+        for item in self._load_task_queue():
+            order = self._merge_bookmark_order(item.get("bookmark_order"), (item.get("illust") or {}).get("bookmark_order"))
+            if order is None:
+                continue
+            queue_max = order if queue_max is None else max(queue_max, order)
+
+        metadata_max = self._get_metadata_bookmark_order_max()
+        if queue_max is None:
+            return metadata_max if metadata_max is not None else -1
+        if metadata_max is None:
+            return queue_max
+        return max(queue_max, metadata_max)
+
+    def _assign_bookmark_order(self, candidates, bookmark_ids, full_scan, scan_cursor):
+        # Pixiv 收藏接口通常按最新在前返回，这里统一换算为 oldest->newest 递增序号。
+        ordered_old_to_new = []
+        seen = set()
+        for raw_id in reversed(bookmark_ids):
+            illust_id = self._as_int(raw_id)
+            if illust_id is None or illust_id in seen:
+                continue
+            if illust_id not in candidates:
+                continue
+            ordered_old_to_new.append(illust_id)
+            seen.add(illust_id)
+
+        if not ordered_old_to_new:
+            return
+
+        if full_scan:
+            next_order = 0
+        else:
+            next_order = self._get_existing_bookmark_order_max(scan_cursor) + 1
+
+        assigned = 0
+        for illust_id in ordered_old_to_new:
+            illust = candidates.get(illust_id)
+            if not illust:
+                continue
+            illust["bookmark_order"] = next_order
+            next_order += 1
+            assigned += 1
+
+        if isinstance(scan_cursor, dict):
+            bookmarks_data = scan_cursor.get("bookmarks")
+            if not isinstance(bookmarks_data, dict):
+                scan_cursor["bookmarks"] = {}
+                bookmarks_data = scan_cursor["bookmarks"]
+            bookmarks_data["max_bookmark_order"] = next_order - 1
+
+        self._log_event(
+            "bookmark_order_assigned",
+            full_scan=bool(full_scan),
+            assigned=assigned,
+            max_bookmark_order=next_order - 1,
+        )
+
     def _parse_pixiv_datetime(self, value):
         if not value:
             return None
@@ -304,6 +404,8 @@ class PixivCrawler:
 
         item["is_bookmarked"] = bool(item.get("is_bookmarked", False) or is_bookmarked)
         item["is_following_author"] = bool(item.get("is_following_author", False) or is_following_author)
+        if "bookmark_order" in illust:
+            item["bookmark_order"] = self._merge_bookmark_order(item.get("bookmark_order"), illust.get("bookmark_order"))
 
     def _scan_bookmarks(self, user_id, candidates, full_scan=False, scan_cursor=None):
         stats = {
@@ -329,6 +431,7 @@ class PixivCrawler:
         first_seen_illust_id = None
         first_seen_create_date = None
         stop_scan = False
+        bookmark_scan_ids = []
         while True:
             if self._should_stop():
                 stats["stop_requested"] = True
@@ -401,6 +504,7 @@ class PixivCrawler:
                     existing_streak = 0
 
                 self._upsert_candidate(candidates, illust, is_bookmarked=True, is_following_author=False)
+                bookmark_scan_ids.append(int(illust.get("id")))
 
             if stop_scan:
                 break
@@ -410,6 +514,7 @@ class PixivCrawler:
             if stats.get("stop_requested"):
                 break
 
+        self._assign_bookmark_order(candidates, bookmark_scan_ids, full_scan=bool(full_scan), scan_cursor=scan_cursor)
         self._log_event("scan_finish", source="bookmarks", scanned=stats["scanned"], filtered=stats["filtered"], rate_limited=stats["rate_limited"])
         if isinstance(scan_cursor, dict):
             scan_cursor["bookmarks"] = {
@@ -417,6 +522,7 @@ class PixivCrawler:
                 "incremental_stopped": bool(stats.get("incremental_stopped", False)),
                 "latest_seen_illust_id": first_seen_illust_id,
                 "latest_seen_create_date": first_seen_create_date,
+                "max_bookmark_order": self._as_int(scan_cursor.get("bookmarks", {}).get("max_bookmark_order")),
                 "updated_at": self._now_str(),
             }
         return stats
@@ -566,6 +672,7 @@ class PixivCrawler:
                     existing["updated_at"] = now
                     existing["is_bookmarked"] = bool(illust.get("is_bookmarked", False))
                     existing["is_following_author"] = bool(illust.get("is_following_author", False))
+                    existing["bookmark_order"] = self._merge_bookmark_order(existing.get("bookmark_order"), illust.get("bookmark_order"))
                     existing["illust"] = illust
                 continue
 
@@ -582,6 +689,7 @@ class PixivCrawler:
                     "next_retry_at": None,
                     "is_bookmarked": bool(illust.get("is_bookmarked", False)),
                     "is_following_author": bool(illust.get("is_following_author", False)),
+                    "bookmark_order": self._as_int(illust.get("bookmark_order")),
                     "enqueued_at": now,
                     "updated_at": now,
                     "illust": illust,
@@ -596,6 +704,7 @@ class PixivCrawler:
             existing["illust"] = illust
             existing["is_bookmarked"] = bool(illust.get("is_bookmarked", False) or existing.get("is_bookmarked", False))
             existing["is_following_author"] = bool(illust.get("is_following_author", False) or existing.get("is_following_author", False))
+            existing["bookmark_order"] = self._merge_bookmark_order(existing.get("bookmark_order"), illust.get("bookmark_order"))
             existing["updated_at"] = now
             if prev_status in ("done", "running"):
                 existing["status"] = "pending"
@@ -774,6 +883,7 @@ class PixivCrawler:
 
             illust["is_bookmarked"] = bool(item.get("is_bookmarked", False))
             illust["is_following_author"] = bool(item.get("is_following_author", False))
+            illust["bookmark_order"] = self._as_int(item.get("bookmark_order"))
 
             if self.downloader.is_illust_fully_downloaded(illust):
                 item["status"] = "done"

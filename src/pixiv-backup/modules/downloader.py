@@ -311,6 +311,7 @@ class DownloadManager:
             "original_url": f"https://www.pixiv.net/artworks/{illust_id}",
             "is_bookmarked": bool(illust_info.get("is_bookmarked", False)),
             "is_following_author": bool(illust_info.get("is_following_author", False)),
+            "bookmark_order": illust_info.get("bookmark_order"),
             "is_access_limited": bool(
                 illust_info.get("is_access_limited", False) or self.is_access_limited_illust(illust_info)
             ),
