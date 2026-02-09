@@ -116,11 +116,13 @@ LuCI 实时状态说明：
   "original_url": "https://www.pixiv.net/artworks/12345678",
   "is_bookmarked": true,
   "is_following_author": false,
+  "bookmark_order": 1234,
   "is_access_limited": false
 }
 ```
 说明：当前为开发阶段数据结构，默认不做旧 metadata 兼容迁移。
 前端默认列表建议过滤 `is_access_limited=true`，避免将 `limit_unknown` 占位资源当作可展示主图。
+收藏列表建议优先按 `bookmark_order` 倒序（`DESC`）显示，`bookmark_order` 越大表示收藏越新。
 
 ## 命令行工具
 

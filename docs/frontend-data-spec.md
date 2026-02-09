@@ -97,6 +97,7 @@
 | `original_url` | string | 作品页 URL（`https://www.pixiv.net/artworks/<id>`） |
 | `is_bookmarked` | boolean | 是否来自收藏扫描 |
 | `is_following_author` | boolean | 是否来自关注作者扫描 |
+| `bookmark_order` | number \| null | 收藏顺序号（最旧为 0，越新越大；非收藏来源可能为 `null`） |
 | `is_access_limited` | boolean | 是否为访问受限占位资源（如 `limit_unknown`） |
 
 ## 4.2 真实样例（节选）
@@ -135,6 +136,7 @@
 - `caption` 可能含 HTML，渲染前请做 XSS 处理或转纯文本。
 - 时间字段建议统一转换为本地时区展示。
 - 若 `is_access_limited=true`，该作品应从默认画廊主流中排除（通常显示到“异常/受限”分组）。
+- 收藏页建议优先按 `bookmark_order DESC` 排序（最新收藏在前）；当 `bookmark_order` 为空时可回退 `create_date DESC`。
 
 ## 5. 运行状态文件（status.json）
 
@@ -288,6 +290,12 @@ YYYY-MM-DD HH:MM:SS - pixiv-backup.audit - INFO - event=luci_action source=<cont
 
 - 列表默认条件：`downloaded=true AND is_access_limited!=true`。
 - 如需排障页，再单独展示 `is_access_limited=true` 作品。
+
+收藏排序建议：
+
+- 主排序：`bookmark_order DESC`（最新收藏优先）。
+- 回退排序：`create_date DESC`。
+- 若做前端索引缓存，建议持久化 `bookmark_order`，不要每次临时按文件修改时间排序。
 
 全量重建索引建议（当规则变更后）：
 
