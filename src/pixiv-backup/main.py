@@ -770,6 +770,7 @@ def _print_status():
             runtime = json.loads(status_file.read_text(encoding="utf-8"))
         except Exception:
             runtime = {}
+    service_running = _is_service_running()
     print("Pixiv Backup 状态")
     print(f"配置节: {config.main_section}")
     print(f"用户ID: {config.get_user_id() or '未设置'}")
@@ -777,9 +778,13 @@ def _print_status():
     print(f"下载模式: {config.get_download_mode()}")
     print(f"配置完整: {'是' if config.validate_required() else '否'}")
     print(f"数据库: {db_path} ({'存在' if Path(db_path).exists() else '不存在'})")
+    print(f"服务状态: {'运行中' if service_running else '已停止'}")
     if runtime:
         state = runtime.get('state', 'unknown')
         phase = runtime.get('phase', 'unknown')
+        if not service_running:
+            state = "stopped"
+            phase = "stopped"
         print("")
         print("运行状态:")
         print(f"- 状态: {state}")
@@ -793,7 +798,9 @@ def _print_status():
         cooldown_seconds = runtime.get("cooldown_seconds")
         print("")
         print("冷却信息:")
-        if state == "cooldown" or cooldown_reason or next_run_at:
+        if not service_running:
+            print("- 无（服务已停止）")
+        elif state == "cooldown" or cooldown_reason or next_run_at:
             print(f"- 原因: {cooldown_reason or '-'}")
             print(f"- 下次开始: {next_run_at or '-'}")
             print(f"- 冷却秒数: {cooldown_seconds if cooldown_seconds is not None else '-'}")
@@ -1426,15 +1433,18 @@ def _run_initd_command(action):
 
     if action == "stop" and effective_returncode == 0:
         time.sleep(1)
-        if _is_daemon_process_alive():
-            _emit_cli_audit(_event_line("stop_residual_detected", status="warning"))
-            _force_kill_daemon_process()
+        residual_pids = _list_daemon_pids()
+        if residual_pids:
+            _emit_cli_audit(_event_line("stop_residual_detected", status="warning", pids=",".join(str(p) for p in residual_pids)))
+            _force_kill_daemon_process(residual_pids)
             time.sleep(1)
-            if _is_daemon_process_alive():
-                print("警告: stop 后仍检测到 pixiv-backup --daemon 进程", file=sys.stderr)
-                _emit_cli_audit(_event_line("stop_residual_detected", status="error"))
+            remaining_pids = _list_daemon_pids()
+            if remaining_pids:
+                print(f"错误: stop 后仍检测到残留进程 PID={','.join(str(p) for p in remaining_pids)}，已尝试强制清理但未成功", file=sys.stderr)
+                _emit_cli_audit(_event_line("stop_residual_detected", status="error", pids=",".join(str(p) for p in remaining_pids)))
                 return EXIT_ERROR
             _emit_cli_audit(_event_line("stop_residual_detected", status="killed"))
+        _record_service_stopped_status(source="cli_stop")
     _emit_cli_audit(
         _event_line(
             "initd_command",
@@ -1460,22 +1470,69 @@ def _filter_stop_stderr(stderr_text):
 
 
 def _is_daemon_process_alive():
+    return len(_list_daemon_pids()) > 0
+
+
+def _is_zombie_pid(pid):
+    try:
+        with open(f"/proc/{int(pid)}/stat", "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read().strip()
+        parts = content.split()
+        if len(parts) >= 3:
+            return parts[2] == "Z"
+    except Exception:
+        return False
+    return False
+
+
+def _list_daemon_pids():
     pgrep = shutil.which("pgrep")
     if not pgrep:
-        return False
+        return []
     result = subprocess.run(
         [pgrep, "-f", "pixiv-backup --daemon"],
         capture_output=True,
         text=True,
         check=False,
     )
-    return result.returncode == 0 and bool((result.stdout or "").strip())
+    if result.returncode != 0:
+        return []
+    current_pid = os.getpid()
+    pids = []
+    for line in (result.stdout or "").splitlines():
+        try:
+            pid = int(line.strip())
+        except Exception:
+            continue
+        if pid == current_pid:
+            continue
+        if _is_zombie_pid(pid):
+            continue
+        pids.append(pid)
+    return sorted(set(pids))
 
 
-def _force_kill_daemon_process():
+def _force_kill_daemon_process(pids=None):
+    target_pids = list(pids or _list_daemon_pids())
+    for pid in target_pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+    time.sleep(0.3)
+    for pid in target_pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+
+    # 兜底：某些环境只有 pkill/killall 命令可用
     pkill = shutil.which("pkill")
     if pkill:
-        subprocess.run([pkill, "-f", "pixiv-backup --daemon"], check=False)
+        subprocess.run([pkill, "-9", "-f", "pixiv-backup --daemon"], check=False)
+    killall = shutil.which("killall")
+    if killall:
+        subprocess.run([killall, "-9", "pixiv-backup"], check=False)
 
 
 def _install_signal_handlers(service):
@@ -1648,6 +1705,25 @@ def _write_runtime_status_patch(output_dir, patch):
     status_file.parent.mkdir(parents=True, exist_ok=True)
     with open(status_file, "w", encoding="utf-8") as f:
         json.dump(current, f, ensure_ascii=False, indent=2)
+
+
+def _record_service_stopped_status(source="cli_stop"):
+    patch = {
+        "state": "stopped",
+        "phase": "stopped",
+        "message": "服务已停止",
+        "stop_requested": True,
+        "stopped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "cooldown_reason": None,
+        "next_run_at": None,
+        "cooldown_seconds": 0,
+    }
+    for output_dir in _resolve_force_run_output_dirs():
+        try:
+            _write_runtime_status_patch(output_dir, patch)
+            _emit_cli_audit(_event_line("status_snapshot_updated", source=source, output_dir=output_dir, state="stopped"))
+        except Exception as e:
+            _emit_cli_audit(_event_line("status_snapshot_update_failed", source=source, output_dir=output_dir, error=e))
 
 
 def _record_trigger_status(source, status, detail):

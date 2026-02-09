@@ -221,6 +221,16 @@ function action_status()
         end
     end
 
+    -- 服务未运行时，避免展示陈旧的 syncing/cooldown 状态
+    if result.service_status ~= "running" then
+        result.runtime.state = "stopped"
+        result.runtime.phase = "stopped"
+        result.runtime.message = "服务已停止"
+        result.runtime.cooldown_reason = nil
+        result.runtime.next_run_at = nil
+        result.runtime.cooldown_seconds = 0
+    end
+
     -- 最近错误兼容回退（旧字段仅有 last_error）
     if #result.recent_errors == 0 and result.runtime and result.runtime.last_error and result.runtime.last_error ~= "" then
         local fallback = normalize_recent_error_item({
