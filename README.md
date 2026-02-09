@@ -135,6 +135,8 @@ python tools/backfill_bookmark_order.py \
 - 脚本会全量拉取收藏列表（最新在前），按“最旧=0、最新最大”回填 `bookmark_order`。
 - 同时会更新 `metadata` 与 `data/task_queue.json` 中的 `is_bookmarked/bookmark_order`。
 - 可先加 `--dry-run` 预览变更数量。
+- 可加 `--progress` 显示进度，`--debug` 打印前 20 条变更样例。
+- 若需包含私密收藏，使用 `--restrict both`（public + private）。
 
 ## 命令行工具
 

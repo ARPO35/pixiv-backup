@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import sys
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -29,12 +31,31 @@ def next_url_kwargs(next_url: str):
     return {k: v[0] for k, v in query_params.items() if v}
 
 
-def fetch_all_bookmark_ids(api, user_id: int, restrict: str):
+def progress_line(enabled: bool, label: str, current: int, total: int = None):
+    if not enabled:
+        return
+    if total and total > 0:
+        pct = (current / total) * 100
+        sys.stdout.write(f"\r[{label}] {current}/{total} ({pct:.1f}%)")
+    else:
+        sys.stdout.write(f"\r[{label}] {current}")
+    sys.stdout.flush()
+
+
+def progress_done(enabled: bool):
+    if enabled:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+def fetch_bookmark_ids_by_restrict(api, user_id: int, restrict: str, show_progress: bool = False, debug: bool = False):
     ids_newest_first = []
     seen = set()
     next_url = None
+    page_no = 0
 
     while True:
+        page_no += 1
         if next_url:
             kwargs = next_url_kwargs(next_url)
             kwargs.pop("user_id", None)
@@ -51,10 +72,16 @@ def fetch_all_bookmark_ids(api, user_id: int, restrict: str):
             seen.add(illust_id)
             ids_newest_first.append(illust_id)
 
+        if show_progress:
+            progress_line(True, f"fetch:{restrict}", len(ids_newest_first))
+        if debug:
+            print(f"\n[debug] restrict={restrict} page={page_no} page_size={len(illusts)} total={len(ids_newest_first)}")
+
         next_url = (result or {}).get("next_url")
         if not next_url:
             break
 
+    progress_done(show_progress)
     return ids_newest_first
 
 
@@ -66,20 +93,32 @@ def build_order_map(ids_newest_first):
     return order_map
 
 
-def rewrite_metadata(metadata_dir: Path, order_map, dry_run: bool):
+def rewrite_metadata(metadata_dir: Path, order_map, dry_run: bool, show_progress: bool = False, debug: bool = False):
     changed = 0
     scanned = 0
     missing = 0
+    parse_failed = 0
+    non_null_count = 0
 
     if not metadata_dir.exists():
-        return scanned, changed, missing
+        return {
+            "scanned": scanned,
+            "changed": changed,
+            "missing": missing,
+            "parse_failed": parse_failed,
+            "non_null_count": non_null_count,
+        }
 
-    for metadata_path in metadata_dir.glob("*.json"):
+    files = sorted(metadata_dir.glob("*.json"))
+    total = len(files)
+
+    for metadata_path in files:
         scanned += 1
         try:
             with open(metadata_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
+            parse_failed += 1
             continue
 
         try:
@@ -100,30 +139,63 @@ def rewrite_metadata(metadata_dir: Path, order_map, dry_run: bool):
             data["bookmark_order"] = target_order
             data["is_bookmarked"] = True
 
+        if data.get("bookmark_order") is not None:
+            non_null_count += 1
+
         after = json.dumps(data, ensure_ascii=False, sort_keys=True)
         if before == after:
+            if show_progress and scanned % 100 == 0:
+                progress_line(True, "metadata", scanned, total)
             continue
 
         changed += 1
+        if debug and changed <= 20:
+            print(
+                f"[debug] metadata changed: pid={illust_id} "
+                f"bookmark_order={data.get('bookmark_order')} is_bookmarked={data.get('is_bookmarked')}"
+            )
         if not dry_run:
             with open(metadata_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
 
-    return scanned, changed, missing
+        if show_progress and scanned % 100 == 0:
+            progress_line(True, "metadata", scanned, total)
+
+    progress_done(show_progress)
+    return {
+        "scanned": scanned,
+        "changed": changed,
+        "missing": missing,
+        "parse_failed": parse_failed,
+        "non_null_count": non_null_count,
+    }
 
 
-def rewrite_task_queue(queue_path: Path, order_map, dry_run: bool):
+def rewrite_task_queue(queue_path: Path, order_map, dry_run: bool, show_progress: bool = False, debug: bool = False):
     if not queue_path.exists():
-        return 0, 0
+        return {
+            "scanned": 0,
+            "changed": 0,
+            "matched": 0,
+            "unmatched": 0,
+        }
 
     with open(queue_path, "r", encoding="utf-8") as f:
         payload = json.load(f)
     items = payload.get("items", []) if isinstance(payload, dict) else []
     if not isinstance(items, list):
-        return 0, 0
+        return {
+            "scanned": 0,
+            "changed": 0,
+            "matched": 0,
+            "unmatched": 0,
+        }
 
     scanned = 0
     changed = 0
+    matched = 0
+    unmatched = 0
+    total = len(items)
     for item in items:
         scanned += 1
         try:
@@ -132,6 +204,10 @@ def rewrite_task_queue(queue_path: Path, order_map, dry_run: bool):
             continue
 
         target_order = order_map.get(illust_id)
+        if target_order is None:
+            unmatched += 1
+        else:
+            matched += 1
         before = json.dumps(item, ensure_ascii=False, sort_keys=True)
         if target_order is None:
             item["bookmark_order"] = None
@@ -149,23 +225,76 @@ def rewrite_task_queue(queue_path: Path, order_map, dry_run: bool):
         after = json.dumps(item, ensure_ascii=False, sort_keys=True)
         if before != after:
             changed += 1
+            if debug and changed <= 20:
+                print(
+                    f"[debug] queue changed: pid={illust_id} "
+                    f"bookmark_order={item.get('bookmark_order')} is_bookmarked={item.get('is_bookmarked')}"
+                )
+
+        if show_progress and scanned % 200 == 0:
+            progress_line(True, "queue", scanned, total)
 
     if changed > 0 and not dry_run:
         payload["items"] = items
         with open(queue_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
-    return scanned, changed
+    progress_done(show_progress)
+    return {
+        "scanned": scanned,
+        "changed": changed,
+        "matched": matched,
+        "unmatched": unmatched,
+    }
+
+
+def fetch_all_bookmark_ids(api, user_id: int, restrict: str, show_progress: bool = False, debug: bool = False):
+    if restrict in ("public", "private"):
+        return fetch_bookmark_ids_by_restrict(
+            api,
+            user_id=user_id,
+            restrict=restrict,
+            show_progress=show_progress,
+            debug=debug,
+        )
+
+    if restrict == "both":
+        public_ids = fetch_bookmark_ids_by_restrict(
+            api,
+            user_id=user_id,
+            restrict="public",
+            show_progress=show_progress,
+            debug=debug,
+        )
+        private_ids = fetch_bookmark_ids_by_restrict(
+            api,
+            user_id=user_id,
+            restrict="private",
+            show_progress=show_progress,
+            debug=debug,
+        )
+        merged = []
+        seen = set()
+        for pid in public_ids + private_ids:
+            if pid in seen:
+                continue
+            seen.add(pid)
+            merged.append(pid)
+        return merged
+
+    raise ValueError(f"不支持的 restrict 值: {restrict}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="全量回填 metadata/task_queue 的 bookmark_order 字段")
     parser.add_argument("--output-dir", required=True, help="备份输出目录，例如 /mnt/sda1/pixiv-backup")
     parser.add_argument("--user-id", type=int, required=True, help="Pixiv 用户 ID")
-    parser.add_argument("--restrict", default="public", choices=["public", "private"], help="收藏可见性")
+    parser.add_argument("--restrict", default="public", choices=["public", "private", "both"], help="收藏可见性（both=public+private）")
     parser.add_argument("--token-file", default="", help="token.json 路径，默认 <output_dir>/data/token.json")
     parser.add_argument("--refresh-token", default="", help="直接传 refresh_token（优先级高于 token-file）")
     parser.add_argument("--dry-run", action="store_true", help="仅预览，不落盘")
+    parser.add_argument("--progress", action="store_true", help="显示进度条")
+    parser.add_argument("--debug", action="store_true", help="打印调试信息（含前20条变更样例）")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir).expanduser().resolve()
@@ -176,19 +305,43 @@ def main():
     api = AppPixivAPI()
     api.auth(refresh_token=refresh_token)
 
-    bookmark_ids = fetch_all_bookmark_ids(api, user_id=args.user_id, restrict=args.restrict)
+    t0 = time.time()
+    bookmark_ids = fetch_all_bookmark_ids(
+        api,
+        user_id=args.user_id,
+        restrict=args.restrict,
+        show_progress=args.progress,
+        debug=args.debug,
+    )
     order_map = build_order_map(bookmark_ids)
 
-    meta_scanned, meta_changed, meta_missing = rewrite_metadata(metadata_dir, order_map, dry_run=args.dry_run)
-    queue_scanned, queue_changed = rewrite_task_queue(queue_path, order_map, dry_run=args.dry_run)
+    metadata_stats = rewrite_metadata(
+        metadata_dir,
+        order_map,
+        dry_run=args.dry_run,
+        show_progress=args.progress,
+        debug=args.debug,
+    )
+    queue_stats = rewrite_task_queue(
+        queue_path,
+        order_map,
+        dry_run=args.dry_run,
+        show_progress=args.progress,
+        debug=args.debug,
+    )
 
     print(f"bookmarks_fetched={len(bookmark_ids)}")
-    print(f"metadata_scanned={meta_scanned}")
-    print(f"metadata_changed={meta_changed}")
-    print(f"metadata_not_in_bookmark={meta_missing}")
-    print(f"queue_scanned={queue_scanned}")
-    print(f"queue_changed={queue_changed}")
+    print(f"metadata_scanned={metadata_stats['scanned']}")
+    print(f"metadata_changed={metadata_stats['changed']}")
+    print(f"metadata_not_in_bookmark={metadata_stats['missing']}")
+    print(f"metadata_parse_failed={metadata_stats['parse_failed']}")
+    print(f"metadata_bookmark_order_non_null={metadata_stats['non_null_count']}")
+    print(f"queue_scanned={queue_stats['scanned']}")
+    print(f"queue_changed={queue_stats['changed']}")
+    print(f"queue_matched_bookmark={queue_stats['matched']}")
+    print(f"queue_unmatched_bookmark={queue_stats['unmatched']}")
     print(f"dry_run={args.dry_run}")
+    print(f"elapsed_seconds={time.time() - t0:.2f}")
 
 
 if __name__ == "__main__":
