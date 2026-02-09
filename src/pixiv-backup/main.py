@@ -202,8 +202,12 @@ class PixivBackupService:
 
     def _parse_error_detail(self, detail, fallback_pid="-", fallback_url=""):
         text = str(detail or "").strip()
+        text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
         pid = str(fallback_pid or "-")
         url = str(fallback_url or "")
+        url = url.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+        url = url.split("\n", 1)[0].strip()
+        url = re.sub(r"^\s*url\s*[:=]\s*", "", url, flags=re.IGNORECASE)
         error = text
 
         pid_match = re.search(r"\bpid\s*[=:]\s*(\d+)\b", text, flags=re.IGNORECASE)
@@ -213,10 +217,26 @@ class PixivBackupService:
         url_match = re.search(r"\burl\s*=\s*(\S+)", text, flags=re.IGNORECASE)
         if url_match:
             url = url_match.group(1).strip()
+        else:
+            url_label_match = re.search(r"\burl\s*[:=]\s*([^\n]+)", text, flags=re.IGNORECASE)
+            if url_label_match:
+                url = url_label_match.group(1).strip()
 
         err_match = re.search(r"\berror\s*=\s*(.+)$", text, flags=re.IGNORECASE)
         if err_match:
             error = err_match.group(1).strip()
+        else:
+            err_label_match = re.search(r"(?:^|\n)\s*(?:错误|error)\s*[:=]\s*(.+)$", text, flags=re.IGNORECASE)
+            if err_label_match:
+                error = err_label_match.group(1).strip()
+
+        if url:
+            url = url.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+            url = url.split("\n", 1)[0].strip()
+            url = re.sub(r"^\s*url\s*[:=]\s*", "", url, flags=re.IGNORECASE)
+        if error:
+            error = error.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n").strip()
+            error = re.sub(r"^\s*(?:错误|error)\s*[:=]\s*", "", error, flags=re.IGNORECASE)
 
         if not url and pid and pid != "-":
             url = self._illust_url(pid)
@@ -812,18 +832,32 @@ def _print_status():
                 pid = item.get("pid", "-")
                 action = item.get("action", "-")
                 detail = str(item.get("detail") or "")
-                url = item.get("url", "")
-                error = item.get("error") or ""
+                detail = detail.replace("\\r\\n", "\n").replace("\\n", "\n")
+                url = str(item.get("url") or "")
+                url = url.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+                url = url.split("\n", 1)[0].strip()
+                url = re.sub(r"^\s*url\s*[:=]\s*", "", url, flags=re.IGNORECASE)
+                error = str(item.get("error") or "")
+                error = error.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n").strip()
+                error = re.sub(r"^\s*(?:错误|error)\s*[:=]\s*", "", error, flags=re.IGNORECASE)
                 if not url and detail:
                     m_url = re.search(r"\burl\s*=\s*(\S+)", detail, flags=re.IGNORECASE)
                     if m_url:
                         url = m_url.group(1).strip()
+                    else:
+                        m_url_label = re.search(r"\burl\s*[:=]\s*([^\n]+)", detail, flags=re.IGNORECASE)
+                        if m_url_label:
+                            url = m_url_label.group(1).strip()
                 if not error and detail:
                     m_err = re.search(r"\berror\s*=\s*(.+)$", detail, flags=re.IGNORECASE)
                     if m_err:
                         error = m_err.group(1).strip()
                     else:
-                        error = detail
+                        m_err_label = re.search(r"(?:^|\n)\s*(?:错误|error)\s*[:=]\s*(.+)$", detail, flags=re.IGNORECASE)
+                        if m_err_label:
+                            error = m_err_label.group(1).strip()
+                        else:
+                            error = detail
                 if not url and str(pid).isdigit():
                     url = f"https://www.pixiv.net/artworks/{pid}"
                 if not error:

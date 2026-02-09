@@ -174,20 +174,33 @@ live_panel.cfgvalue = function(self, section)
       var url = (item && item.url) ? item.url : '';
       var error = (item && item.error) ? item.error : '';
       var detail = (item && item.detail) ? item.detail : '';
+      url = String(url || '').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      url = url.split('\n')[0].replace(/^\\s*url\\s*[:=]\\s*/i, '').trim();
+      error = String(error || '').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      error = error.replace(/^\\s*(错误|error)\\s*[:=]\\s*/i, '').trim();
+      detail = String(detail || '').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
       if (!url && detail) {
         var mUrl = detail.match(/url\\s*=\\s*(\\S+)/i);
         if (mUrl && mUrl[1]) url = mUrl[1];
+        else {
+          var mUrlLabel = detail.match(/url\\s*[:=]\\s*([^\\n]+)/i);
+          if (mUrlLabel && mUrlLabel[1]) url = mUrlLabel[1].trim();
+        }
       }
       if (!error && detail) {
         var mErr = detail.match(/error\\s*=\\s*(.+)$/i);
         if (mErr && mErr[1]) error = mErr[1];
-        else error = detail;
+        else {
+          var mErrLabel = detail.match(/(?:^|\\n)\\s*(?:错误|error)\\s*[:=]\\s*(.+)$/i);
+          if (mErrLabel && mErrLabel[1]) error = mErrLabel[1];
+          else error = detail;
+        }
       }
       if (!url && /^\\d+$/.test(String(pid))) {
         url = 'https://www.pixiv.net/artworks/' + pid;
       }
       if (!error) error = '-';
-      return '时间: ' + t + '  PID: ' + pid + '  操作: ' + action + '  URL: ' + (url || '-') + '\\n错误: ' + error;
+      return '时间: ' + t + '  PID: ' + pid + '  操作: ' + action + '  URL: ' + (url || '-') + '\n错误: ' + error;
     }).join('\n\n');
   }
 

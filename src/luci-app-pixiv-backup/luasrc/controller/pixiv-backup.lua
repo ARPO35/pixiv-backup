@@ -51,11 +51,19 @@ local function normalize_recent_error_item(item, fallback_time)
         return nil
     end
     local detail = tostring(item.detail or "")
+    detail = detail:gsub("\\r\\n", "\n"):gsub("\\n", "\n")
     local pid = tostring(item.pid or "-")
     local action = tostring(item.action or "-")
     local url = tostring(item.url or "")
     local err = tostring(item.error or "")
     local t = tostring(item.time or fallback_time or "-")
+
+    url = url:gsub("\\r\\n", "\n"):gsub("\\n", "\n"):gsub("\r\n", "\n"):gsub("\r", "\n")
+    url = url:match("([^\n]+)") or url
+    url = url:gsub("^%s*[Uu][Rr][Ll]%s*[:=]%s*", "")
+    err = err:gsub("\\r\\n", "\n"):gsub("\\n", "\n"):gsub("\r\n", "\n"):gsub("\r", "\n")
+    err = err:gsub("^%s*错误%s*[:=]%s*", "")
+    err = err:gsub("^%s*[Ee][Rr][Rr][Oo][Rr]%s*[:=]%s*", "")
 
     if (pid == "-" or pid == "") and detail ~= "" then
         local m = detail:match("pid%s*=%s*(%d+)")
@@ -67,6 +75,11 @@ local function normalize_recent_error_item(item, fallback_time)
         local m = detail:match("url%s*=%s*(%S+)")
         if m then
             url = m
+        else
+            local m2 = detail:match("[Uu][Rr][Ll]%s*[:=]%s*([^\n]+)")
+            if m2 then
+                url = m2
+            end
         end
     end
     if (err == "") and detail ~= "" then
@@ -74,7 +87,15 @@ local function normalize_recent_error_item(item, fallback_time)
         if m then
             err = m
         else
-            err = detail
+            local m2 = detail:match("\n%s*错误%s*[:=]%s*(.+)$")
+            if not m2 then
+                m2 = detail:match("\r%s*错误%s*[:=]%s*(.+)$")
+            end
+            if m2 then
+                err = m2
+            else
+                err = detail
+            end
         end
     end
     if url == "" and pid:match("^%d+$") then
