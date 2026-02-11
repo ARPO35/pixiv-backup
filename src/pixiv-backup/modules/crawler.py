@@ -752,6 +752,28 @@ class PixivCrawler:
                     return None
         return None
 
+    def _extract_api_error_text(self, api_response):
+        if not isinstance(api_response, dict):
+            return ""
+        error_obj = api_response.get("error")
+        if not error_obj:
+            return ""
+        if isinstance(error_obj, dict):
+            parts = []
+            for key in ("message", "reason", "user_message"):
+                value = str(error_obj.get(key, "")).strip()
+                if value:
+                    parts.append(f"{key}={value}")
+            details = error_obj.get("user_message_details")
+            if details:
+                try:
+                    details_text = json.dumps(details, ensure_ascii=False)
+                except Exception:
+                    details_text = str(details)
+                parts.append(f"user_message_details={details_text}")
+            return " ".join(parts) if parts else "error=unknown"
+        return f"error={error_obj}"
+
     def _classify_error(self, error_msg, explicit_http_status=None):
         msg = (error_msg or "").lower()
         http_status = explicit_http_status if explicit_http_status is not None else self._extract_http_status(msg)
@@ -1108,17 +1130,38 @@ class PixivCrawler:
             if illust_type == "ugoira":
                 # 动图需要特殊处理
                 api = self._get_api()
-                ugoira_response = api.ugoira_metadata(illust_id)
+                ugoira_response = api.ugoira_metadata(str(illust_id))
                 ugoira_info = self._extract_ugoira_metadata(ugoira_response)
 
                 if ugoira_info:
                     result = self.downloader.download_ugoira(illust, ugoira_info)
                 else:
-                    response_keys = ",".join(sorted(list(ugoira_response.keys()))) if isinstance(ugoira_response, dict) else "-"
-                    return {
-                        "success": False,
-                        "error": self._with_illust_context(illust_id, f"无法获取动图信息(response_keys={response_keys})")
-                    }
+                    # 兼容异常数据：队列里可能是旧类型，若 API 明确不是 ugoira，降级为静态图下载
+                    detail_resp = api.illust_detail(int(illust_id))
+                    detail_illust = detail_resp.get("illust") if isinstance(detail_resp, dict) else None
+                    detail_type = detail_illust.get("type") if isinstance(detail_illust, dict) else None
+                    if isinstance(detail_illust, dict) and detail_type and detail_type != "ugoira":
+                        self._log_event(
+                            "ugoira_fallback_static",
+                            illust_id=illust_id,
+                            queue_type=illust_type,
+                            detail_type=detail_type,
+                        )
+                        # 继承队列标记，避免元数据丢失
+                        detail_illust["is_bookmarked"] = bool(illust.get("is_bookmarked", False))
+                        detail_illust["is_following_author"] = bool(illust.get("is_following_author", False))
+                        detail_illust["bookmark_order"] = self._as_int(illust.get("bookmark_order"))
+                        result = self._download_illust_images(detail_illust)
+                    else:
+                        api_error = self._extract_api_error_text(ugoira_response)
+                        response_keys = ",".join(sorted(list(ugoira_response.keys()))) if isinstance(ugoira_response, dict) else "-"
+                        detail = f"response_keys={response_keys}"
+                        if api_error:
+                            detail = f"{detail} api_error={api_error}"
+                        return {
+                            "success": False,
+                            "error": self._with_illust_context(illust_id, f"无法获取动图信息({detail})")
+                        }
             else:
                 # 静态图片：优先下载原图，支持多图逐页下载
                 result = self._download_illust_images(illust)
@@ -1220,15 +1263,46 @@ class PixivCrawler:
             return {"success": False, "error": f"page_index=0 image_url={image_url} {err}"}
         return result
 
+    def _is_ugoira_payload(self, data):
+        if not isinstance(data, dict):
+            return False
+        if data.get("zip_url") or isinstance(data.get("zip_urls"), dict):
+            return True
+        if isinstance(data.get("frames"), list) and len(data.get("frames")) > 0:
+            return True
+        return False
+
     def _extract_ugoira_metadata(self, ugoira_response):
         if not ugoira_response:
             return None
-        if isinstance(ugoira_response, dict):
-            nested = ugoira_response.get("ugoira_metadata")
-            if isinstance(nested, dict):
-                return nested
-            if ugoira_response.get("zip_url") or isinstance(ugoira_response.get("zip_urls"), dict):
-                return ugoira_response
+        if not isinstance(ugoira_response, dict):
+            return None
+
+        if self._is_ugoira_payload(ugoira_response):
+            return ugoira_response
+
+        # 兼容不同字段层级（ugoira_metadata/body/data/result）
+        queue = []
+        for key in ("ugoira_metadata", "metadata", "body", "data", "result"):
+            value = ugoira_response.get(key)
+            if isinstance(value, dict):
+                queue.append(value)
+
+        visited = set()
+        while queue:
+            current = queue.pop(0)
+            current_id = id(current)
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+
+            if self._is_ugoira_payload(current):
+                return current
+
+            for value in current.values():
+                if isinstance(value, dict):
+                    queue.append(value)
+
         return None
 
     def test_connection(self):
