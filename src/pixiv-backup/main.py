@@ -34,6 +34,7 @@ from modules.auth_manager import AuthManager
 from modules.crawler import PixivCrawler
 from modules.database import DatabaseManager
 from modules.downloader import DownloadManager
+from modules.bookmark_order_rebuilder import BookmarkOrderRebuilder
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -618,6 +619,16 @@ def main():
     errors_parser = subparsers.add_parser("errors", help="查看未处理报错")
     errors_parser.add_argument("-n", "--limit", type=int, default=50, help="输出条数上限（默认: 50）")
     errors_parser.add_argument("--json", action="store_true", help="以 JSON 格式输出")
+    bookmark_order_parser = subparsers.add_parser("bookmark-order", help="重新拉取并重排 bookmark_order")
+    bookmark_order_parser.add_argument(
+        "--restrict",
+        default="both",
+        choices=["public", "private", "both"],
+        help="收藏可见性范围（默认: both）",
+    )
+    bookmark_order_parser.add_argument("--dry-run", action="store_true", help="仅预览统计，不写入文件")
+    bookmark_order_parser.add_argument("--progress", action="store_true", help="显示处理进度")
+    bookmark_order_parser.add_argument("--debug", action="store_true", help="输出前 20 条变更样例")
 
     args = parser.parse_args()
     _emit_cli_audit(
@@ -684,6 +695,18 @@ def main():
     if args.command == "errors":
         ret = handle_errors_command(args)
         _emit_cli_audit(_event_line("cli_command_result", command="errors", status="ok" if ret == EXIT_OK else "error", exit_code=ret))
+        return ret
+
+    if args.command == "bookmark-order":
+        ret = handle_bookmark_order_command(args)
+        _emit_cli_audit(
+            _event_line(
+                "cli_command_result",
+                command="bookmark-order",
+                status="ok" if ret == EXIT_OK else "error",
+                exit_code=ret,
+            )
+        )
         return ret
 
     if args.command == "run":
@@ -1202,6 +1225,107 @@ def handle_errors_command(args):
             print(f"  title={item['title']}")
         print(f"  url={item['url']}")
         print(f"  error={item['error_message']}")
+    return EXIT_OK
+
+
+def handle_bookmark_order_command(args):
+    config = ConfigManager()
+    if not config.validate_required():
+        return EXIT_ERROR
+
+    daemon_running = _is_service_running()
+    _emit_cli_audit(
+        _event_line(
+            "bookmark_order_rebuild_start",
+            restrict=args.restrict,
+            dry_run=bool(args.dry_run),
+            daemon_running=daemon_running,
+        )
+    )
+
+    if daemon_running:
+        print("检测到后台服务运行中，先停止守护进程再重排 bookmark_order ...")
+        stop_ret = _run_initd_command("stop")
+        if stop_ret != EXIT_OK:
+            print("停止守护进程失败，取消重排。", file=sys.stderr)
+            _emit_cli_audit(_event_line("bookmark_order_rebuild_stop_daemon", status="error", exit_code=stop_ret))
+            return EXIT_ERROR
+        print("守护进程已停止，本次不会自动重启。")
+        _emit_cli_audit(_event_line("bookmark_order_rebuild_stop_daemon", status="ok"))
+
+    try:
+        auth_manager = AuthManager(config)
+        api_client = auth_manager.get_api_client()
+    except Exception as e:
+        print(f"初始化 Pixiv API 失败: {e}", file=sys.stderr)
+        _emit_cli_audit(_event_line("bookmark_order_rebuild_auth", status="error", error=e))
+        return EXIT_ERROR
+
+    try:
+        rebuilder = BookmarkOrderRebuilder(config, api_client)
+        result = rebuilder.rebuild(
+            restrict=args.restrict,
+            dry_run=bool(args.dry_run),
+            show_progress=bool(args.progress),
+            debug=bool(args.debug),
+        )
+    except Exception as e:
+        print(f"重排失败: {e}", file=sys.stderr)
+        _emit_cli_audit(_event_line("bookmark_order_rebuild_result", status="error", error=e))
+        return EXIT_ERROR
+
+    if not result.get("success"):
+        print(f"重排失败: {result.get('error', '未知错误')}", file=sys.stderr)
+        _emit_cli_audit(
+            _event_line(
+                "bookmark_order_rebuild_result",
+                status="error",
+                error=result.get("error", "unknown"),
+            )
+        )
+        return EXIT_ERROR
+
+    metadata_stats = result.get("metadata", {})
+    queue_stats = result.get("queue", {})
+    unmatched_samples = result.get("metadata_unmatched_samples", [])
+
+    print(f"restrict={result.get('restrict')}")
+    print(f"bookmarks_fetched={result.get('bookmarks_fetched', 0)}")
+    print(f"max_bookmark_order={result.get('max_bookmark_order', -1)}")
+    print(f"metadata_scanned={metadata_stats.get('scanned', 0)}")
+    print(f"metadata_changed={metadata_stats.get('changed', 0)}")
+    print(f"metadata_matched_bookmark={metadata_stats.get('matched', 0)}")
+    print(f"metadata_unmatched_bookmark={metadata_stats.get('unmatched', 0)}")
+    print(f"metadata_parse_failed={metadata_stats.get('parse_failed', 0)}")
+    print(f"queue_scanned={queue_stats.get('scanned', 0)}")
+    print(f"queue_changed={queue_stats.get('changed', 0)}")
+    print(f"queue_matched_bookmark={queue_stats.get('matched', 0)}")
+    print(f"queue_unmatched_bookmark={queue_stats.get('unmatched', 0)}")
+    print(f"queue_updated={result.get('queue_updated', False)}")
+    print(f"scan_cursor_updated={result.get('scan_cursor_updated', False)}")
+    print(f"dry_run={result.get('dry_run', False)}")
+    print(f"elapsed_seconds={result.get('elapsed_seconds', 0)}")
+
+    if metadata_stats.get("unmatched", 0) > 0:
+        print("warning=部分 metadata 未命中本次收藏结果，已保留原值")
+        if unmatched_samples:
+            print("metadata_unmatched_samples=" + ",".join(str(x) for x in unmatched_samples))
+    if queue_stats.get("unmatched", 0) > 0:
+        print("warning=部分 task_queue 条目未命中本次收藏结果，已保留原值")
+
+    _emit_cli_audit(
+        _event_line(
+            "bookmark_order_rebuild_result",
+            status="ok",
+            restrict=result.get("restrict", "-"),
+            dry_run=bool(result.get("dry_run", False)),
+            bookmarks_fetched=result.get("bookmarks_fetched", 0),
+            max_bookmark_order=result.get("max_bookmark_order", -1),
+            metadata_changed=metadata_stats.get("changed", 0),
+            queue_changed=queue_stats.get("changed", 0),
+            elapsed_seconds=result.get("elapsed_seconds", 0),
+        )
+    )
     return EXIT_OK
 
 

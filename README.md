@@ -200,6 +200,23 @@ pixiv-backup repair --apply -y
 - `--check` 与 `--apply` 不能同时使用。
 - 仅检查发现问题时会返回非 0。
 
+### 一键重排收藏顺序
+```bash
+# 重新拉取收藏并重排 metadata/task_queue 的 bookmark_order（默认 both）
+pixiv-backup bookmark-order
+
+# 仅预览，不写入文件
+pixiv-backup bookmark-order --dry-run
+
+# 指定范围（public/private/both）
+pixiv-backup bookmark-order --restrict both
+```
+说明：
+- 默认按 `--restrict both` 拉取 public + private 收藏，重排规则为“最旧=0、最新最大”。
+- 若后台守护进程正在运行，命令会先自动执行 `stop`，并且本次不会自动重启服务。
+- 当条目未命中本次收藏结果时，会保留原有 `is_bookmarked/bookmark_order`，仅输出告警统计。
+- 若收藏拉取过程失败（如限速/网络异常），命令会直接失败并且不落盘。
+
 ### 持续查看服务日志
 ```bash
 # 默认先输出最近100行，然后持续追踪（Ctrl+C退出）
