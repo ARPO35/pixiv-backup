@@ -32,13 +32,10 @@ class AuthManager:
         """获取API客户端"""
         if self.api_client:
             return self.api_client
-            
-        # 创建API客户端
-        self.api_client = AppPixivAPI()
-        
-        # 设置超时
+
+        # AppPixivAPI 通过 requests_kwargs 传递超时，直接赋值 timeout 不会生效
         timeout = self.config.get_timeout()
-        self.api_client.timeout = timeout
+        self.api_client = AppPixivAPI(timeout=timeout)
         
         # 使用refresh_token登录
         refresh_token = self.config.get_refresh_token()

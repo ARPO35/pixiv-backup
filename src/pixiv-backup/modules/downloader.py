@@ -1,7 +1,7 @@
-import os
 import time
 import json
 import logging
+import os
 import requests
 from pathlib import Path
 from urllib.parse import urlparse
@@ -46,6 +46,13 @@ class DownloadManager:
 
     def _ensure_parent_dir(self, file_path):
         file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _request_media_stream(self, url, api_client=None, referer=None):
+        if api_client is not None and hasattr(api_client, "requests"):
+            headers = {"Referer": referer or "https://app-api.pixiv.net/"}
+            request_kwargs = getattr(api_client, "requests_kwargs", {}).copy()
+            return api_client.requests.get(url, headers=headers, stream=True, **request_kwargs), "api"
+        return self.session.get(url, timeout=self.timeout, stream=True), "session"
 
     def _extract_request_http_status(self, exc):
         try:
@@ -316,6 +323,10 @@ class DownloadManager:
                 illust_info.get("is_access_limited", False) or self.is_access_limited_illust(illust_info)
             ),
         }
+        if "ugoira_frames" in illust_info:
+            metadata["ugoira_frames"] = illust_info.get("ugoira_frames", [])
+        if "ugoira_zip_url" in illust_info:
+            metadata["ugoira_zip_url"] = illust_info.get("ugoira_zip_url", "")
         
         # 保存JSON文件
         with open(metadata_path, 'w', encoding='utf-8') as f:
@@ -324,7 +335,7 @@ class DownloadManager:
             
         return metadata_path
         
-    def download_ugoira(self, illust_info, ugoira_info):
+    def download_ugoira(self, illust_info, ugoira_info, api_client=None):
         """下载动图"""
         try:
             illust_id = illust_info["id"]
@@ -355,7 +366,11 @@ class DownloadManager:
             self._log_event("file_download_start", illust_id=illust_id, page_index="-", url=zip_url, path=zip_path, zip_source=zip_source)
                 
             # 下载ZIP文件
-            response = self.session.get(zip_url, timeout=self.timeout, stream=True)
+            response, transport = self._request_media_stream(
+                zip_url,
+                api_client=api_client,
+                referer="https://app-api.pixiv.net/",
+            )
             response.raise_for_status()
             
             # 保存ZIP文件
@@ -383,7 +398,7 @@ class DownloadManager:
             metadata["ugoira_frames"] = frames
             metadata["ugoira_zip_url"] = zip_url
             metadata_path = self._save_metadata(metadata)
-            self._log_event("file_download_finish", illust_id=illust_id, page_index="-", status="success", path=zip_path, file_size=file_size, zip_source=zip_source)
+            self._log_event("file_download_finish", illust_id=illust_id, page_index="-", status="success", path=zip_path, file_size=file_size, zip_source=zip_source, transport=transport)
             
             return {
                 "success": True,

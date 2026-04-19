@@ -1134,7 +1134,7 @@ class PixivCrawler:
                 ugoira_info = self._extract_ugoira_metadata(ugoira_response)
 
                 if ugoira_info:
-                    result = self.downloader.download_ugoira(illust, ugoira_info)
+                    result = self.downloader.download_ugoira(illust, ugoira_info, api_client=api)
                 else:
                     # 兼容异常数据：队列里可能是旧类型，若 API 明确不是 ugoira，降级为静态图下载
                     detail_resp = api.illust_detail(int(illust_id))
