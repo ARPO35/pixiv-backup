@@ -1125,6 +1125,16 @@ class PixivCrawler:
         )
         return stats
 
+    def _record_download_failure(self, illust_id, error_msg):
+        try:
+            self.database.mark_as_not_downloaded(illust_id)
+        except Exception as db_error:
+            self._log_event("db_mark_not_downloaded_failed", illust_id=illust_id, error=db_error)
+        try:
+            self.database.record_download_error(illust_id, error_msg)
+        except Exception as db_error:
+            self._log_event("db_record_error_failed", illust_id=illust_id, error=db_error)
+
     def _download_illust(self, illust):
         """下载单个作品"""
         illust_id = illust["id"]
@@ -1142,9 +1152,8 @@ class PixivCrawler:
                 limited_copy = self._json_safe(illust)
                 limited_copy["is_access_limited"] = True
                 self.downloader.save_metadata_snapshot(limited_copy, is_access_limited=True)
-                self.database.mark_as_not_downloaded(illust_id)
                 limited_error = self._with_illust_context(illust_id, "access_limited(limit_unknown)")
-                self.database.record_download_error(illust_id, limited_error)
+                self._record_download_failure(illust_id, limited_error)
                 self._log_event("download_finish", illust_id=illust_id, status="failed", error=limited_error, access_limited=True)
                 return {"success": False, "error": limited_error, "http_status": 403}
 
@@ -1192,7 +1201,7 @@ class PixivCrawler:
             if result["success"]:
                 if not self.downloader.is_illust_fully_downloaded(illust):
                     incomplete_error = self._with_illust_context(illust_id, "文件未完整下载（存在缺页或缺失文件）")
-                    self.database.record_download_error(illust_id, incomplete_error)
+                    self._record_download_failure(illust_id, incomplete_error)
                     self._log_event("download_finish", illust_id=illust_id, status="failed", error=incomplete_error)
                     return {"success": False, "error": incomplete_error}
                 # 标记为已下载
@@ -1210,6 +1219,7 @@ class PixivCrawler:
             else:
                 if result.get("error"):
                     result["error"] = self._with_illust_context(illust_id, result.get("error"))
+                self._record_download_failure(illust_id, result.get("error", "unknown"))
                 self._log_event("download_finish", illust_id=illust_id, status="failed", error=result.get("error", "unknown"))
 
             return result
@@ -1220,10 +1230,7 @@ class PixivCrawler:
                 return {"success": False, "stopped": True, "error": "stop_requested"}
             error_msg = self._with_illust_context(illust_id, f"下载失败: {str(e)}")
             self.logger.error(f"作品 {illust_id} {error_msg}")
-            try:
-                self.database.record_download_error(illust_id, error_msg)
-            except Exception as db_error:
-                self._log_event("db_record_error_failed", illust_id=illust_id, error=db_error)
+            self._record_download_failure(illust_id, error_msg)
             self._log_event("download_finish", illust_id=illust_id, status="failed", error=error_msg)
             return {"success": False, "error": error_msg}
 

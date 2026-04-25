@@ -45,11 +45,30 @@ class DummyAuthManager:
 
 
 class DummyDatabase:
-    pass
+    def save_illust(self, illust):
+        del illust
 
 
 class DummyDownloader:
-    pass
+    def is_access_limited_illust(self, illust):
+        del illust
+        return False
+
+    def is_illust_fully_downloaded(self, illust):
+        del illust
+        return False
+
+
+class RecordingDatabase(DummyDatabase):
+    def __init__(self):
+        self.marked_not_downloaded = []
+        self.recorded_errors = []
+
+    def mark_as_not_downloaded(self, illust_id):
+        self.marked_not_downloaded.append(illust_id)
+
+    def record_download_error(self, illust_id, error_message):
+        self.recorded_errors.append((illust_id, error_message))
 
 
 class FakeFollowingApi:
@@ -144,6 +163,25 @@ class CrawlerFollowingTests(unittest.TestCase):
         self.assertEqual(stats["scanned"], 1)
         self.assertEqual(sorted(candidates), [300])
         self.assertEqual(api.user_illusts_calls, [(10, {})])
+
+    def test_download_failure_clears_downloaded_state_before_recording_error(self):
+        api = FakeFollowingApi({})
+        database = RecordingDatabase()
+        crawler = PixivCrawler(
+            DummyConfig(self.tempdir.name),
+            DummyAuthManager(api),
+            database,
+            DummyDownloader(),
+        )
+        crawler._download_illust_images = lambda illust: {"success": False, "error": "network failed"}
+
+        result = crawler._download_illust(self._illust(300, "2024-01-03T00:00:00+00:00"))
+
+        self.assertFalse(result["success"])
+        self.assertEqual(database.marked_not_downloaded, [300])
+        self.assertEqual(len(database.recorded_errors), 1)
+        self.assertEqual(database.recorded_errors[0][0], 300)
+        self.assertIn("network failed", database.recorded_errors[0][1])
 
 
 if __name__ == "__main__":
