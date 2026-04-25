@@ -588,56 +588,78 @@ class PixivCrawler:
                 stats["stop_requested"] = True
                 self._log_event("scan_stopped", source="following", reason="stop_requested")
                 break
-            try:
-                result = api.user_illusts(user_id=int(follow_user_id))
-            except Exception as e:
-                err = str(e)
-                stats["last_error"] = err
-                if self._is_rate_limit_error(err):
-                    stats["rate_limited"] = True
-                    self._log_event("scan_error", source="following_illusts", follow_user_id=follow_user_id, error=err)
-                    break
-                self._log_event("scan_error", source="following_illusts", follow_user_id=follow_user_id, error=err)
-                continue
-
-            if not result or "illusts" not in result:
-                continue
-
-            illusts = result.get("illusts", [])
-            self._log_event("scan_page", source="following", follow_user_id=follow_user_id, page_size=len(illusts))
             cursor_key = str(follow_user_id)
             author_cursor = authors_cursor.get(cursor_key, {}) if isinstance(authors_cursor, dict) else {}
             stop_illust_id = author_cursor.get("latest_seen_illust_id")
             use_incremental = not full_scan
-            if use_incremental and self._is_following_order_unreliable(illusts):
-                use_incremental = False
-                self._log_event("scan_order_unreliable_fallback", source="following", follow_user_id=follow_user_id, reason="non_desc_order_or_duplicate")
-
+            author_next_url = None
             latest_seen_illust_id = None
             latest_seen_create_date = None
-            if len(illusts) > 0:
-                latest_seen_illust_id = int(illusts[0].get("id"))
-                latest_seen_create_date = illusts[0].get("create_date")
+            first_page = True
+            stop_author_scan = False
 
-            for illust in illusts:
+            while True:
                 if self._should_stop():
                     stats["stop_requested"] = True
                     self._log_event("scan_stopped", source="following", reason="stop_requested")
                     break
-                if use_incremental and stop_illust_id is not None:
-                    try:
-                        if int(illust.get("id")) == int(stop_illust_id):
-                            self._log_event("scan_incremental_stop", source="following", follow_user_id=follow_user_id, stop_illust_id=stop_illust_id)
-                            break
-                    except Exception:
-                        pass
-                stats["scanned"] += 1
-                should_download, reason = self.config.should_download_illust(illust)
-                if not should_download:
-                    stats["filtered"] += 1
-                    self._log_event("scan_filtered", source="following", illust_id=illust.get("id"), reason=reason)
-                    continue
-                self._upsert_candidate(candidates, illust, is_bookmarked=False, is_following_author=True)
+                try:
+                    if author_next_url:
+                        result = api.user_illusts(
+                            user_id=int(follow_user_id),
+                            **self._next_url_kwargs(author_next_url, {"user_id"})
+                        )
+                    else:
+                        result = api.user_illusts(user_id=int(follow_user_id))
+                except Exception as e:
+                    err = str(e)
+                    stats["last_error"] = err
+                    if self._is_rate_limit_error(err):
+                        stats["rate_limited"] = True
+                    self._log_event("scan_error", source="following_illusts", follow_user_id=follow_user_id, error=err)
+                    break
+
+                if not result or "illusts" not in result:
+                    break
+
+                illusts = result.get("illusts", [])
+                self._log_event("scan_page", source="following", follow_user_id=follow_user_id, page_size=len(illusts), next_url=bool(result.get("next_url")))
+
+                if first_page:
+                    if use_incremental and self._is_following_order_unreliable(illusts):
+                        use_incremental = False
+                        self._log_event("scan_order_unreliable_fallback", source="following", follow_user_id=follow_user_id, reason="non_desc_order_or_duplicate")
+                    if len(illusts) > 0:
+                        latest_seen_illust_id = int(illusts[0].get("id"))
+                        latest_seen_create_date = illusts[0].get("create_date")
+                    first_page = False
+
+                for illust in illusts:
+                    if self._should_stop():
+                        stats["stop_requested"] = True
+                        self._log_event("scan_stopped", source="following", reason="stop_requested")
+                        break
+                    if use_incremental and stop_illust_id is not None:
+                        try:
+                            if int(illust.get("id")) == int(stop_illust_id):
+                                self._log_event("scan_incremental_stop", source="following", follow_user_id=follow_user_id, stop_illust_id=stop_illust_id)
+                                stop_author_scan = True
+                                break
+                        except Exception:
+                            pass
+                    stats["scanned"] += 1
+                    should_download, reason = self.config.should_download_illust(illust)
+                    if not should_download:
+                        stats["filtered"] += 1
+                        self._log_event("scan_filtered", source="following", illust_id=illust.get("id"), reason=reason)
+                        continue
+                    self._upsert_candidate(candidates, illust, is_bookmarked=False, is_following_author=True)
+
+                if stats["rate_limited"] or stats.get("stop_requested") or stop_author_scan:
+                    break
+                author_next_url = result.get("next_url")
+                if not author_next_url:
+                    break
 
             if isinstance(authors_cursor, dict):
                 authors_cursor[cursor_key] = {
