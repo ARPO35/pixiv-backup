@@ -6,28 +6,17 @@ STOP=01
 USE_PROCD=1
 PROG=/usr/bin/pixiv-backup
 
-ensure_pixivpy3() {
-    if /usr/bin/python3 -c "import pixivpy3" 2>/dev/null; then
+check_python_deps() {
+    if /usr/bin/python3 -c "import sys; sys.path.insert(0, '/usr/share/pixiv-backup/vendor'); import requests, cloudscraper, requests_toolbelt; from pixivpy3 import AppPixivAPI" 2>/dev/null; then
         return 0
     fi
 
-    echo "检测到缺少 pixivpy3，尝试自动安装..."
-    if ! command -v pip3 >/dev/null 2>&1; then
-        echo "错误: pip3 不可用，请先安装 python3-pip"
-        return 1
-    fi
-
-    if ! pip3 install --no-cache-dir pixivpy3 >/tmp/pixiv-backup-pip.log 2>&1; then
-        echo "错误: 自动安装 pixivpy3 失败，请检查网络和证书"
-        tail -20 /tmp/pixiv-backup-pip.log 2>/dev/null
-        return 1
-    fi
-
-    /usr/bin/python3 -c "import pixivpy3" 2>/dev/null
+    echo "错误: Python依赖不可用，请重新安装 pixiv-backup 软件包"
+    return 1
 }
 
 start_service() {
-    if ! ensure_pixivpy3; then
+    if ! check_python_deps; then
         return 1
     fi
 
@@ -87,8 +76,7 @@ test() {
     
     # 检查Python依赖
     echo "检查Python依赖..."
-    if ! ensure_pixivpy3; then
-        echo "错误: pixivpy3 不可用"
+    if ! check_python_deps; then
         return 1
     fi
     

@@ -4,9 +4,14 @@ import time
 import hashlib
 import base64
 import secrets
+import sys
 from pathlib import Path
 
-# 尝试导入pixivpy，如果失败则尝试安装
+_VENDOR_DIR = Path(__file__).resolve().parents[1] / "vendor"
+if _VENDOR_DIR.is_dir() and str(_VENDOR_DIR) not in sys.path:
+    sys.path.insert(0, str(_VENDOR_DIR))
+
+# 优先从随包 vendor 目录导入 pixivpy3，避免服务启动时依赖 pip/网络
 try:
     from pixivpy3 import AppPixivAPI
     PIXIVPY_AVAILABLE = True
@@ -26,7 +31,7 @@ class AuthManager:
         
         # 检查pixivpy是否可用
         if not PIXIVPY_AVAILABLE:
-            raise ImportError("pixivpy3库未安装，请先安装 python3-pip 后执行: pip3 install pixivpy3")
+            raise ImportError("pixivpy3库不可用，请重新安装 pixiv-backup 软件包")
             
     def get_api_client(self):
         """获取API客户端"""

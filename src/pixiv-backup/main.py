@@ -26,8 +26,9 @@ _possible_paths = [
     "/usr/share/pixiv-backup",                    # 安装后
 ]
 for path in _possible_paths:
-    if path not in sys.path:
-        sys.path.insert(0, path)
+    for candidate in (path, os.path.join(path, "vendor")):
+        if candidate not in sys.path:
+            sys.path.insert(0, candidate)
 
 from modules.config_manager import ConfigManager
 from modules.auth_manager import AuthManager
