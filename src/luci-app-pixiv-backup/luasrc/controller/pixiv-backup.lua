@@ -31,6 +31,30 @@ local function get_output_dir(main)
     return (main and main.output_dir and main.output_dir ~= "") and main.output_dir or DEFAULT_OUTPUT_DIR
 end
 
+local function latest_log_file(output_dir)
+    local log_dir = (output_dir or DEFAULT_OUTPUT_DIR) .. "/data/logs"
+    local latest_path = nil
+    local latest_mtime = -1
+
+    if not fs.access(log_dir) then
+        return nil
+    end
+
+    for name in fs.dir(log_dir) do
+        if name:match("^pixiv%-backup%-%d+%.log$") then
+            local path = log_dir .. "/" .. name
+            local stat = fs.stat(path)
+            local mtime = stat and tonumber(stat.mtime or 0) or 0
+            if mtime > latest_mtime then
+                latest_path = path
+                latest_mtime = mtime
+            end
+        end
+    end
+
+    return latest_path
+end
+
 local function write_luci_audit(output_dir, source, action, status, detail)
     local log_dir = (output_dir or DEFAULT_OUTPUT_DIR) .. "/data/logs"
     local log_file = log_dir .. "/pixiv-backup-" .. os.date("%Y%m%d") .. ".log"
@@ -195,7 +219,7 @@ function action_status()
     end
     
     -- 统计存储使用量
-    local du = sys.exec("du -sh '" .. output_dir .. "/img/' 2>/dev/null | cut -f1")
+    local du = sys.exec("du -sh " .. util.shellquote(output_dir .. "/img/") .. " 2>/dev/null | cut -f1")
     if du and du ~= "" then
         result.stats.storage_used = du:gsub("%s+", "")
     end
@@ -313,12 +337,11 @@ end
 function action_logs()
     local main = get_main_config()
     local output_dir = get_output_dir(main)
-    local latest_log = sys.exec("ls -t '" .. output_dir .. "/data/logs/'pixiv-backup-*.log 2>/dev/null | head -n 1")
-    latest_log = latest_log and latest_log:gsub("%s+$", "")
+    local latest_log = latest_log_file(output_dir)
 
     local logs = nil
     if latest_log and latest_log ~= "" and fs.access(latest_log) then
-        logs = sys.exec("tail -200 '" .. latest_log .. "' 2>/dev/null")
+        logs = sys.exec("tail -200 " .. util.shellquote(latest_log) .. " 2>/dev/null")
     end
     
     http.prepare_content("text/plain; charset=utf-8")
