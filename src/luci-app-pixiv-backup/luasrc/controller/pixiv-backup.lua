@@ -351,17 +351,20 @@ end
 function action_start()
     local main = get_main_config()
     local output_dir = get_output_dir(main)
-    local trigger_bin = fs.access("/usr/bin/pixiv-backup") and "/usr/bin/pixiv-backup" or "pixiv-backup"
-    local rc = sys.call(trigger_bin .. " trigger >/tmp/pixiv-backup-start.log 2>&1")
+    local backup_bin = fs.access("/usr/bin/pixiv-backup") and "/usr/bin/pixiv-backup" or "pixiv-backup"
+    local running = sys.call("/etc/init.d/pixiv-backup running >/dev/null 2>&1") == 0
+    local action = running and "trigger" or "start_force_run"
+    local args = running and " trigger" or " start --force-run"
+    local rc = sys.call(util.shellquote(backup_bin) .. args .. " >/tmp/pixiv-backup-start.log 2>&1")
     local result = fs.readfile("/tmp/pixiv-backup-start.log") or ""
-    write_luci_audit(output_dir, "controller", "trigger", rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
+    write_luci_audit(output_dir, "controller", action, rc == 0 and "ok" or "error", result ~= "" and result or "no_output")
     http.prepare_content("text/plain; charset=utf-8")
     if result ~= "" then
         http.write(result)
     elseif rc == 0 then
-        http.write("已请求立即扫描")
+        http.write(running and "已请求立即扫描" or "服务已启动并请求立即扫描")
     else
-        http.write("立即扫描触发失败：未返回详细输出")
+        http.write(running and "立即扫描触发失败：未返回详细输出" or "服务启动并触发扫描失败：未返回详细输出")
     end
 end
 
