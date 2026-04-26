@@ -43,18 +43,31 @@
   - 停止后台服务。
 - `pixiv-backup restart`
   - 重启后台服务。
+- `pixiv-backup restart --force-run`
+  - 重启并立即触发下一轮扫描（等价于 restart + trigger）。
 - `pixiv-backup test`
   - 执行配置与连接测试（透传 init.d test）。
 - `pixiv-backup trigger`
   - 仅触发“跳过冷却并立即扫描”，不负责启动服务。
 - `pixiv-backup run <count>`
   - 单次执行，必须传入本次下载数量上限。
+  - `--full-scan`：强制全量扫描（跳过增量停止逻辑）。
   - 示例：`pixiv-backup run 20`
 - `pixiv-backup --daemon`
   - 后台巡检循环模式。
   - 每轮上限使用 UCI 的 `max_downloads`。
 - `pixiv-backup status`
   - 只读状态输出，不触发下载。
+- `pixiv-backup errors`
+  - 查看未处理报错。
+  - `-n/--limit <N>`：输出条数上限（默认 50）。
+  - `--json`：以 JSON 格式输出。
+- `pixiv-backup bookmark-order`
+  - 重新拉取收藏列表并重排 metadata/task_queue 的 bookmark_order。
+  - `--restrict {public,private,both}`：收藏可见性范围（默认 both）。
+  - `--dry-run`：仅预览统计，不写入文件。
+  - `--progress`：显示处理进度。
+  - `--debug`：输出前 20 条变更样例。
 - `pixiv-backup repair`
   - 诊断并修复常见问题（依赖、目录、数据库等）。
   - `--check` 仅检查，不修复。
@@ -94,14 +107,14 @@
 控制器：`src/luci-app-pixiv-backup/luasrc/controller/pixiv-backup.lua`
 - `GET /admin/services/pixiv-backup/status`：返回 JSON 状态
 - `GET /admin/services/pixiv-backup/logs`：返回最新日志文本
-- `GET /admin/services/pixiv-backup/start`：触发立即备份（调用 `pixiv-backup start --force-run`）
+- `GET /admin/services/pixiv-backup/start`：触发立即备份（调用 `pixiv-backup trigger`）
 - `GET /admin/services/pixiv-backup/stop`：停止服务
 
 ### 7.2 CBI 配置页
 模型：`src/luci-app-pixiv-backup/luasrc/model/cbi/pixiv-backup.lua`
 - 保存后会根据 `enabled` 执行 `enable/disable`。
 - 页面提供“立即开始备份”按钮：
-  - 调用 `pixiv-backup start --force-run`
+  - 调用 `pixiv-backup trigger`
 
 ### 7.3 状态数据来源
 - 运行态：`output_dir/data/status.json`
@@ -125,6 +138,7 @@
 - `cooldown_after_error_minutes`：错误冷却
 - `high_speed_queue_size`：高速队列数量
 - `low_speed_interval_seconds`：低速队列间隔
+- `interval_jitter_ms`：下载间隔随机偏移（毫秒）
 
 ## 9. 程序原理（核心运行流程）
 核心文件：`src/pixiv-backup/main.py`
@@ -160,10 +174,15 @@
 ### 10.3 程序数据目录
 - `data/pixiv.db`：SQLite
 - `data/task_queue.json`：扫描后去重任务队列
+- `data/scan_cursor.json`：扫描游标（收藏/关注增量断点）
+- `data/run_history.json`：运行历史记录
+- `data/token.json`：token 缓存（敏感）
 - `data/logs/`：日志
 - `data/status.json`：运行态
 - `data/last_run.txt`：最后运行时间
 - `data/force_run.flag`：立即备份触发标志
+- `data/cache/`：缓存
+- `data/thumbnails/`：缩略图
 
 ### 10.4 元数据来源标记
 - `metadata/<illust_id>.json` 新增：
@@ -185,6 +204,7 @@
 - `modules/crawler.py`：分页抓取、下载调度、限速识别、进度上报。
 - `modules/downloader.py`：原图优先下载、文件落盘、元数据写入。
 - `modules/database.py`：状态持久化与统计。
+- `modules/bookmark_order_rebuilder.py`：收藏序号重排、metadata 回填。
 
 ## 13. 当前已知问题/风险
 1. 网络链路不稳定时，OAuth 可能出现 `SSLEOFError`（环境/链路问题多于业务代码问题）。
@@ -231,3 +251,5 @@ touch <output_dir>/data/force_run.flag
 - `src/pixiv-backup/modules/database.py`
 - `src/luci-app-pixiv-backup/luasrc/controller/pixiv-backup.lua`
 - `src/luci-app-pixiv-backup/luasrc/model/cbi/pixiv-backup.lua`
+- `src/luci-app-pixiv-backup/luasrc/view/pixiv-backup.htm`
+- `src/pixiv-backup/modules/bookmark_order_rebuilder.py`
