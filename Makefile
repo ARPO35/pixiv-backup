@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pixiv-backup
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_MAINTAINER:=OpenWrt User <user@example.com>
 PKG_LICENSE:=GPL-3.0
@@ -14,7 +14,7 @@ define Package/pixiv-backup
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Pixiv Backup Service for OpenWrt
-  DEPENDS:=+python3 +python3-requests +python3-pyparsing +ca-bundle
+  DEPENDS:=+python3 +python3-requests +ca-bundle
   PKGARCH:=all
 endef
 
@@ -60,6 +60,12 @@ define Download/typing-extensions
   HASH:=04e5ca0351e0f3f85c6853954072df659d0d13fac324d0072316b67d7794700d
 endef
 
+define Download/pyparsing
+  URL:=https://files.pythonhosted.org/packages/39/92/8486ede85fcc088f1b3dba4ce92dd29d126fd96b0008ea213167940a2475
+  FILE:=pyparsing-3.1.1-py3-none-any.whl
+  HASH:=32c7c0b711493c72ff18a981d24f28aaf9c1fb7ed5e9667c9e84e3db623bdbfb
+endef
+
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
 	$(CP) ./src/* $(PKG_BUILD_DIR)/
@@ -70,6 +76,7 @@ define Build/Prepare
 	unzip -q -o $(DL_DIR)/cloudscraper-1.2.71-py2.py3-none-any.whl -d $(PKG_BUILD_DIR)/vendor
 	unzip -q -o $(DL_DIR)/requests_toolbelt-1.0.0-py2.py3-none-any.whl -d $(PKG_BUILD_DIR)/vendor
 	unzip -q -o $(DL_DIR)/typing_extensions-4.12.2-py3-none-any.whl -d $(PKG_BUILD_DIR)/vendor
+	unzip -q -o $(DL_DIR)/pyparsing-3.1.1-py3-none-any.whl -d $(PKG_BUILD_DIR)/vendor
 endef
 
 define Build/Configure
@@ -125,6 +132,7 @@ $(eval $(call Download,pixivpy3))
 $(eval $(call Download,cloudscraper))
 $(eval $(call Download,requests-toolbelt))
 $(eval $(call Download,typing-extensions))
+$(eval $(call Download,pyparsing))
 
 $(eval $(call BuildPackage,pixiv-backup))
 $(eval $(call BuildPackage,luci-app-pixiv-backup))
