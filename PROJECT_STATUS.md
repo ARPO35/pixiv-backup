@@ -98,7 +98,7 @@
 - `/etc/init.d/pixiv-backup test`
 
 实现特性：
-- 启动前做依赖检查（`pixivpy3` 自动安装尝试）。
+- 启动前检查随包/vendor Python 依赖（缺失时提示重新安装软件包）。
 - 启动前校验 UCI 必填项。
 - `status` 会读取配置并显示最近日志文件位置。
 
@@ -107,14 +107,14 @@
 控制器：`src/luci-app-pixiv-backup/luasrc/controller/pixiv-backup.lua`
 - `GET /admin/services/pixiv-backup/status`：返回 JSON 状态
 - `GET /admin/services/pixiv-backup/logs`：返回最新日志文本
-- `GET /admin/services/pixiv-backup/start`：触发立即备份（调用 `pixiv-backup trigger`）
+- `GET /admin/services/pixiv-backup/start`：触发立即备份（服务运行中调用 `pixiv-backup trigger`；服务未运行时调用 `pixiv-backup start --force-run`）
 - `GET /admin/services/pixiv-backup/stop`：停止服务
 
 ### 7.2 CBI 配置页
 模型：`src/luci-app-pixiv-backup/luasrc/model/cbi/pixiv-backup.lua`
 - 保存后会根据 `enabled` 执行 `enable/disable`。
 - 页面提供“立即开始备份”按钮：
-  - 调用 `pixiv-backup trigger`
+  - 服务运行中调用 `pixiv-backup trigger`；服务未运行时调用 `pixiv-backup start --force-run`
 
 ### 7.3 状态数据来源
 - 运行态：`output_dir/data/status.json`
