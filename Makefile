@@ -115,9 +115,6 @@ define Package/luci-app-pixiv-backup/install
 	
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci-app-pixiv-backup/luasrc/model/cbi/pixiv-backup.lua $(1)/usr/lib/lua/luci/model/cbi/
-	
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/pixiv-backup
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci-app-pixiv-backup/luasrc/view/pixiv-backup.htm $(1)/usr/lib/lua/luci/view/pixiv-backup/
 endef
 
 define Package/pixiv-backup/conffiles

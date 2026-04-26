@@ -251,5 +251,4 @@ touch <output_dir>/data/force_run.flag
 - `src/pixiv-backup/modules/database.py`
 - `src/luci-app-pixiv-backup/luasrc/controller/pixiv-backup.lua`
 - `src/luci-app-pixiv-backup/luasrc/model/cbi/pixiv-backup.lua`
-- `src/luci-app-pixiv-backup/luasrc/view/pixiv-backup.htm`
 - `src/pixiv-backup/modules/bookmark_order_rebuilder.py`
